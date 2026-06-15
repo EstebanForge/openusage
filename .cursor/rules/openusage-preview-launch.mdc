@@ -1,0 +1,22 @@
+---
+description: Always kill and restart OpenUsage Preview after app changes or when asked
+alwaysApply: true
+---
+
+# OpenUsage Preview Launch Workflow
+
+**Always** kill any running OpenUsage / OpenUsage Preview instance and install/launch a fresh Preview build when:
+
+- You change app UI, widgets, providers, or anything that affects the running binary
+- The user asks to run, restart, or verify the app
+- You finish a task where the user should see the result in the menu bar app
+
+Do not leave an old process running and assume a rebuild is enough.
+
+Use the project script:
+
+```bash
+./script/build_and_run.sh verify
+```
+
+This script stops the existing process, builds the app, stages/signs the bundle, installs it to `/Applications/OpenUsage Preview.app`, launches it, and verifies the process is running.

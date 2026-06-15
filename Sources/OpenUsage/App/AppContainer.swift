@@ -1,0 +1,88 @@
+import SwiftUI
+import Foundation
+import Observation
+
+/// Composition root: owns the (constant) registry and the (mutable) stores, injected
+/// into the SwiftUI environment.
+@MainActor
+@Observable
+final class AppContainer {
+    let registry: WidgetRegistry
+    let layout: LayoutStore
+    let dataStore: WidgetDataStore
+    /// Single source of truth for which providers the user has turned off. Both stores consult it (via
+    /// injected closures) and the Providers settings tab drives it.
+    let enablement: ProviderEnablementStore
+    /// Read-only usage API on 127.0.0.1:6736 for other local apps (silently off when the port is taken).
+    private let localAPI: LocalUsageServer
+    // A `let` of a `Sendable` `Task` is implicitly nonisolated, so the nonisolated `deinit` can cancel it.
+    private let refreshTask: Task<Void, Never>
+
+    init() {
+        let providers: [ProviderRuntime] = [
+            ClaudeProvider(),
+            CodexProvider(),
+            DevinProvider(),
+            GrokProvider(),
+            CursorProvider()
+        ]
+        let registry = WidgetRegistry.from(providers)
+        let enablement = ProviderEnablementStore()
+        let layout = LayoutStore(
+            registry: registry,
+            isProviderEnabled: { [enablement] in enablement.isEnabled($0) }
+        )
+        let dataStore = WidgetDataStore(
+            registry: registry,
+            providers: providers,
+            isProviderEnabled: { [enablement] in enablement.isEnabled($0) },
+            orderedDescriptors: { [layout] in layout.visiblePlaced.compactMap { layout.descriptor(for: $0) } }
+        )
+        self.registry = registry
+        self.enablement = enablement
+        self.layout = layout
+        self.dataStore = dataStore
+        self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore] in
+            LocalUsageAPI.State(
+                enabledOrderedIDs: layout.providerOrder.filter { enablement.isEnabled($0) },
+                knownIDs: Set(registry.providers.map(\.id)),
+                snapshots: dataStore.snapshots
+            )
+        })
+        self.refreshTask = Self.startPeriodicRefresh(dataStore: dataStore)
+        localAPI.start()
+    }
+
+    deinit { refreshTask.cancel() }
+
+    /// Drives live updates: refresh on launch, then again every chosen interval. Each pass honors the
+    /// cache, so it only hits the network once a snapshot has actually expired. `@Observable` propagates
+    /// the resulting snapshot changes to the menu-bar label and any open widgets, so the UI refreshes on
+    /// its own instead of only when the popover opens.
+    private static func startPeriodicRefresh(dataStore: WidgetDataStore) -> Task<Void, Never> {
+        Task {
+            while !Task.isCancelled {
+                await dataStore.refreshAll()
+                await waitForNextRefresh()
+            }
+        }
+    }
+
+    /// Sleep for the user's chosen refresh interval, but wake early on any `UserDefaults` change so a new
+    /// "Refresh every" choice takes effect on the next pass instead of after the old, longer interval.
+    private static func waitForNextRefresh() async {
+        let interval = RefreshSetting.interval()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try? await Task.sleep(for: .seconds(interval))
+            }
+            group.addTask {
+                for await _ in NotificationCenter.default.notifications(named: UserDefaults.didChangeNotification) {
+                    break
+                }
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+}

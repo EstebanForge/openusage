@@ -1,0 +1,43 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "OpenUsage",
+    platforms: [
+        .macOS("26.0")
+    ],
+    products: [
+        .executable(name: "OpenUsage", targets: ["OpenUsage"])
+    ],
+    dependencies: [
+        // The de-facto standard recorder + global hotkey for Mac apps (System Settings-style field).
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.4.0"),
+        // In-app auto-updates (appcast + EdDSA-signed downloads). 2.8+ adds macOS 26 Tahoe support.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.3")
+    ],
+    targets: [
+        .executableTarget(
+            name: "OpenUsage",
+            dependencies: [
+                .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
+            path: "Sources/OpenUsage",
+            resources: [
+                .copy("Resources/ProviderIcons"),
+                .copy("Resources/model_manifest.json")
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .testTarget(
+            name: "OpenUsageTests",
+            dependencies: ["OpenUsage"],
+            path: "Tests/OpenUsageTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        )
+    ]
+)

@@ -1,0 +1,352 @@
+import SwiftUI
+import AppKit
+
+/// The popover content: the provider/metric list (or the Customize / Settings screen) as a scroll
+/// view above a single pinned footer — app identity (or the "Customize" mode label) plus the live
+/// refresh countdown on the leading edge, and the glass Customize + Settings buttons on the
+/// trailing edge.
+///
+/// The footer is pinned via `safeAreaBar`, so the scrolling content underlaps it and macOS's native
+/// scroll edge effect (the blur/fade as content passes under a bar) handles the bottom transition —
+/// no custom gradient mask. The popover height is clamped to a share of the hosting screen so it
+/// never overflows when many widgets are added.
+struct DashboardView: View {
+    @Environment(AppContainer.self) private var container
+    @Environment(LayoutStore.self) private var layout
+    @Environment(WidgetDataStore.self) private var dataStore
+    @State private var listContentHeight: CGFloat = 300
+    @State private var customizeContentHeight: CGFloat = 220
+    @State private var settingsContentHeight: CGFloat = 480
+    @State private var footerHeight: CGFloat = 46
+    @State private var usableHeight: CGFloat = ScreenHeightReader.smallestUsableHeight()
+    @State private var didInitialRefresh = false
+    @State private var hasMeasuredCustomizeContent = false
+    @State private var hasMeasuredSettingsContent = false
+    @State private var reorderLift: ReorderLift?
+    /// Reset to the top whenever the popover closes, so it never reopens mid-scroll.
+    @State private var dashboardScrollPosition = ScrollPosition(edge: .top)
+    /// Drives the footer's "Next update in Nm" so it reflects the chosen cadence and updates live
+    /// when the General settings picker changes it. Same key/default as the periodic refresh loop.
+    @AppStorage(RefreshSetting.key) private var refreshMinutes = RefreshSetting.defaultMinutes
+    /// Row rhythm and the Customize height seed track the global density setting live.
+    @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
+
+    private static let outerPadding: CGFloat = 14
+    /// Breathing room between the bottom of the scrolling content and the pinned footer. Kept small
+    /// because the native scroll edge effect — not whitespace — provides the visual separation.
+    private static let contentBottomGap: CGFloat = 12
+    /// Footer content starts at the same standard padding as the provider containers.
+    private static let footerHorizontalPadding: CGFloat = outerPadding
+    private static let reorderSpace = "popoverReorderSpace"
+    /// One width across both densities — switching density shouldn't move the popover's left edge.
+    private static let popoverWidth: CGFloat = 320
+
+    /// Never grow taller than 85% of the *hosting* screen's usable height; scroll beyond that.
+    private var maxHeight: CGFloat {
+        floor(usableHeight * 0.85)
+    }
+
+    /// Customize is a management surface, not the data view: cap it at half the screen so it reads
+    /// as a compact editor and clearly scrolls, instead of towering like the dashboard. (Settings
+    /// instead tracks the dashboard's own height — see `settingsScrollHeight`.)
+    private var maxCustomizeHeight: CGFloat {
+        floor(usableHeight * 0.5)
+    }
+
+    /// The pinned footer lives outside the scroll region, so the scroll area's cap is the popover cap
+    /// minus that fixed chrome.
+    private var chromeHeight: CGFloat {
+        footerHeight
+    }
+
+    private var maxScrollHeight: CGFloat {
+        max(120, maxHeight - chromeHeight)
+    }
+
+    private var maxCustomizeScrollHeight: CGFloat {
+        max(120, maxCustomizeHeight - chromeHeight)
+    }
+
+    /// The scroll area fits its content exactly until it would exceed the cap, then it scrolls.
+    private var dashboardScrollHeight: CGFloat {
+        min(listContentHeight, maxScrollHeight)
+    }
+
+    private var customizeScrollHeight: CGFloat {
+        let contentHeight = hasMeasuredCustomizeContent ? customizeContentHeight : estimatedCustomizeContentHeight
+        return min(contentHeight, maxCustomizeScrollHeight)
+    }
+
+    /// Settings fits its content exactly, like the dashboard and Customize, up to the global cap.
+    /// Before the first measurement an estimate seeds the height so the flip lands close and the
+    /// real measurement only fine-tunes it.
+    private var settingsScrollHeight: CGFloat {
+        let contentHeight = hasMeasuredSettingsContent ? settingsContentHeight : estimatedSettingsContentHeight
+        return min(contentHeight, maxScrollHeight)
+    }
+
+    private var popoverHeight: CGFloat {
+        let scrollHeight: CGFloat
+        switch layout.screen {
+        case .dashboard: scrollHeight = dashboardScrollHeight
+        case .customize: scrollHeight = customizeScrollHeight
+        case .settings: scrollHeight = settingsScrollHeight
+        }
+        return scrollHeight + chromeHeight
+    }
+
+    /// Cold-start estimate for Customize content. Without this, the first click into Customize starts from an
+    /// arbitrary seed height, then jumps when the real `ScrollView` measurement arrives. The constants mirror
+    /// `CustomizeView`'s row/block spacing closely enough to choose the same clamped height before first layout.
+    private var estimatedCustomizeContentHeight: CGFloat {
+        let groups = layout.customizeGroups
+        guard !groups.isEmpty else { return 104 }
+        let providerHeaderHeight: CGFloat = density == .compact ? 26 : 30
+        let providerHeaderToCardSpacing: CGFloat = density.headerToCardSpacing + 2
+        let metricRowHeight = density.estimatedMetricRowHeight
+        let providerSpacing = density.sectionSpacing
+        let verticalPadding: CGFloat = 24
+        let blocks = groups.reduce(CGFloat.zero) { total, group in
+            total + providerHeaderHeight + providerHeaderToCardSpacing + CGFloat(group.metrics.count) * metricRowHeight
+        }
+        return verticalPadding + blocks + CGFloat(max(0, groups.count - 1)) * providerSpacing
+    }
+
+    /// Cold-start estimate for Settings content, same role as the Customize estimate above. The
+    /// constants mirror `SettingsScreen`: five sections (a caption header over a card) holding
+    /// nine fixed control rows plus one row per registered provider.
+    private var estimatedSettingsContentHeight: CGFloat {
+        let sectionCount: CGFloat = 5
+        let sectionHeaderHeight: CGFloat = 16
+        let fixedRowCount: CGFloat = 9
+        let rowCount = fixedRowCount + CGFloat(container.registry.providers.count)
+        let verticalPadding: CGFloat = 24
+        return verticalPadding
+            + sectionCount * (sectionHeaderHeight + density.headerToCardSpacing)
+            + rowCount * density.estimatedMetricRowHeight
+            + (sectionCount - 1) * density.sectionSpacing
+    }
+
+    var body: some View {
+        modeBody
+            .frame(width: Self.popoverWidth)
+            .safeAreaBar(edge: .bottom, spacing: 0) { footerBar }
+            .frame(height: popoverHeight, alignment: .top)
+            .overlay(alignment: .topLeading) {
+                if let reorderLift {
+                    ReorderLiftPreview(lift: reorderLift)
+                }
+            }
+            .coordinateSpace(name: Self.reorderSpace)
+            .background(ScreenHeightReader(usableHeight: $usableHeight))
+            .background(
+                // Esc backs out of Customize / Settings first; only from the dashboard does it
+                // close the popover.
+                EscapeToCloseReader(onEscape: {
+                    guard layout.screen != .dashboard else { return false }
+                    withAnimation(Motion.modeSwitch) { layout.screen = .dashboard }
+                    return true
+                })
+            )
+            .background(
+                PopoverVisibilityReader { visible in
+                    if !visible { resetTransientState() }
+                }
+            )
+            .animation(Motion.modeSwitch, value: layout.screen)
+            // A screen switch can tear the list down mid-drag, in which case the gesture's
+            // `onEnded` never fires — clear the lift here or its overlay survives onto the new
+            // screen.
+            .onChange(of: layout.screen) {
+                reorderLift = nil
+                layout.cancelDrag()
+            }
+            .onChange(of: layout.customizeGroups.map { group in
+                "\(group.provider.id):\(group.metrics.map(\.id).joined(separator: ","))"
+            }) {
+                hasMeasuredCustomizeContent = false
+            }
+            .task {
+                guard !didInitialRefresh else { return }
+                didInitialRefresh = true
+                await dataStore.refreshAll()
+            }
+    }
+
+    private func resetTransientState() {
+        if layout.screen != .dashboard { layout.screen = .dashboard }
+        reorderLift = nil
+        layout.cancelDrag()
+        dashboardScrollPosition.scrollTo(edge: .top)
+    }
+
+    @ViewBuilder
+    private var modeBody: some View {
+        switch layout.screen {
+        case .customize:
+            CustomizeView(
+                contentHeight: $customizeContentHeight,
+                hasMeasuredContent: $hasMeasuredCustomizeContent,
+                reorderSpaceName: Self.reorderSpace,
+                reorderLift: $reorderLift
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+        case .settings:
+            SettingsScreen(
+                contentHeight: $settingsContentHeight,
+                hasMeasuredContent: $hasMeasuredSettingsContent
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+        case .dashboard:
+            scrollingDashboard
+                .transition(.move(edge: .leading).combined(with: .opacity))
+        }
+    }
+
+    /// The widget list as a scroll view that fills the region the footer leaves. The content scrolls
+    /// under the footer; the native scroll edge effect handles the visual transition.
+    ///
+    /// The scroll edge effect needs the scroll view to keep a vertical scroller, so we don't hide
+    /// indicators (that would kill the effect). `invisibleOverlayScroller()` instead keeps the overlay
+    /// scroller (which reserves no gutter) and just makes it invisible: effect intact, no visible bar.
+    private var scrollingDashboard: some View {
+        ScrollView(.vertical) {
+            widgetContent
+                .padding(.horizontal, Self.outerPadding)
+                .padding(.top, density.contentTopPadding)
+                .padding(.bottom, Self.contentBottomGap)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newValue in
+                    if newValue > 0 { listContentHeight = newValue }
+                }
+                .invisibleOverlayScroller()
+        }
+        .scrollPosition($dashboardScrollPosition)
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollEdgeEffectStyle(.soft, for: .top)
+    }
+
+    @ViewBuilder
+    private var widgetContent: some View {
+        if layout.displayGroups.isEmpty {
+            Text("Turn on Customize to choose what to show.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .padding(.horizontal, 16)
+        } else {
+            WidgetGroupedListView(
+                reorderSpaceName: Self.reorderSpace,
+                reorderLift: $reorderLift
+            )
+        }
+    }
+
+    // MARK: - Pinned footer
+
+    /// The single bottom footer: app identity (or the "Customize" mode label while editing) plus the
+    /// live refresh countdown on the leading edge, and the glass Customize + Settings buttons on the
+    /// trailing edge. Pinned via `safeAreaBar` so the content scrolls under it with the native scroll
+    /// edge effect.
+    private var footerBar: some View {
+        HStack(alignment: .center, spacing: 8) {
+            footerIdentity
+            Spacer(minLength: 8)
+            HeaderView()
+        }
+        .padding(.horizontal, Self.footerHorizontalPadding)
+        // Balanced vertical padding so the footer content sits evenly between the bar's edges. The
+        // scroll edge blur spans the bar's full height regardless, so the transition stays smooth.
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newValue in
+            if newValue > 0 { footerHeight = newValue }
+        }
+    }
+
+    /// Leading side of the footer. Normal mode shows the app name with the live "Next update in …"
+    /// line beneath it; Customize mode shows the pin budget ("4 of 6 pinned") in the same slot.
+    /// Settings keeps the normal identity — the version line doubles as the About info there.
+    /// A denied pin attempt swaps either line for the reason (in orange), played with the macOS
+    /// deny shake — the wrong-password idiom — on every blocked click.
+    @ViewBuilder
+    private var footerIdentity: some View {
+        if layout.isEditing {
+            Text(layout.pinLimitNotice ?? "\(layout.pinnedCount) of \(LayoutStore.maxTotalPins) pinned")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(layout.pinLimitNotice == nil ? AnyShapeStyle(.secondary) : Theme.notice)
+                .denyShake(trigger: layout.pinNoticeShakeTrigger)
+                .animation(Motion.spring, value: layout.pinLimitNotice)
+        } else {
+            // Both lines share the same font and muted style so the footer reads as one block.
+            VStack(alignment: .leading, spacing: 0) {
+                Text("OpenUsage \(AppInfo.version)")
+                if let notice = layout.pinLimitNotice {
+                    Text(notice)
+                        .foregroundStyle(Theme.notice)
+                        // This label is inserted by the denial itself, so it must shake on mount.
+                        .denyShake(trigger: layout.pinNoticeShakeTrigger, shakeOnAppear: true)
+                } else {
+                    nextUpdateButton
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .animation(Motion.spring, value: layout.pinLimitNotice)
+        }
+    }
+
+    /// Ticks once a second so the "Next update in …" copy counts down live, and doubles as the manual
+    /// refresh control: clicking it (or ⌘R) forces a fresh pass immediately. While a refresh is in
+    /// flight it reads "Updating…" with a small system spinner after the text.
+    private var nextUpdateButton: some View {
+        Button {
+            refreshNow()
+        } label: {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack(spacing: 5) {
+                    Text(updateStatusText(now: context.date))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                    if isUpdating {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("r", modifiers: .command)
+        .help("Refresh now (⌘R)")
+        .disabled(isUpdating)
+    }
+
+    private func refreshNow() {
+        guard !isUpdating else { return }
+        Task { await dataStore.refreshAll(force: true) }
+    }
+
+    private var isUpdating: Bool {
+        !dataStore.refreshingProviderIDs.isEmpty
+    }
+
+    /// "Updating…" during an in-flight refresh, otherwise a live countdown to the next scheduled pass
+    /// (last completed pass + the chosen interval). Falls back to a full interval before the first pass.
+    private func updateStatusText(now: Date) -> String {
+        if isUpdating {
+            return "Updating…"
+        }
+        let interval = TimeInterval(refreshMinutes * 60)
+        let base = dataStore.lastRefreshAt ?? now
+        let remaining = max(0, base.addingTimeInterval(interval).timeIntervalSince(now))
+        let totalSeconds = Int(remaining.rounded(.up))
+        if totalSeconds >= 60 {
+            let minutes = Int((Double(totalSeconds) / 60).rounded(.up))
+            return "Next update in \(minutes)m"
+        }
+        return "Next update in \(totalSeconds)s"
+    }
+}

@@ -1,0 +1,18 @@
+# Refreshing & Caching
+
+## When data updates
+
+- All enabled providers refresh together: at launch, then on the interval you pick in Settings (5–30 minutes). Providers fetch in parallel — one slow provider doesn't delay the others.
+- The popover footer shows `Next update in Nm`. **Clicking it (or ⌘R)** refreshes immediately, skipping the cache.
+- While a provider is fetching, a small spinner appears next to its name (and one shows in the footer beside the countdown), so you can tell a refresh is in flight rather than wondering if the numbers are stale.
+- Changing the interval in Settings takes effect right away.
+
+## Caching
+
+Snapshots are cached on disk and load instantly at launch, so you see your last-known values immediately instead of placeholders — even before the first fetch finishes. A cached value counts as fresh for one refresh interval; after that it still displays, but the next pass re-fetches it.
+
+## When a fetch fails
+
+A failed refresh **never wipes your data**: the last good values stay on screen, and a small warning triangle appears next to the provider's name — hover it for the error message (e.g. "Not logged in"). The error clears on the next successful refresh.
+
+Rows that have never had data show "No data" rather than made-up numbers.

@@ -1,0 +1,171 @@
+import Foundation
+
+/// Provider output normalized into a small app-owned vocabulary.
+///
+/// This mirrors the old JavaScript plugin contract while keeping rendering decisions in Swift.
+enum ProgressFormat: Hashable, Sendable, Codable {
+    case percent
+    case dollars
+    case count(suffix: String)
+
+    var metricKind: MetricKind {
+        switch self {
+        case .percent:
+            return .percent
+        case .dollars:
+            return .dollars
+        case .count:
+            return .count
+        }
+    }
+
+    var countSuffix: String? {
+        if case .count(let suffix) = self { return suffix }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case suffix
+    }
+
+    private enum Kind: String, Codable {
+        case percent
+        case dollars
+        case count
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .percent:
+            self = .percent
+        case .dollars:
+            self = .dollars
+        case .count:
+            self = .count(suffix: try container.decode(String.self, forKey: .suffix))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .percent:
+            try container.encode(Kind.percent, forKey: .kind)
+        case .dollars:
+            try container.encode(Kind.dollars, forKey: .kind)
+        case .count(let suffix):
+            try container.encode(Kind.count, forKey: .kind)
+            try container.encode(suffix, forKey: .suffix)
+        }
+    }
+}
+
+enum MetricLine: Hashable, Sendable, Codable {
+    case text(label: String, value: String, colorHex: String? = nil, subtitle: String? = nil)
+    case progress(
+        label: String,
+        used: Double,
+        limit: Double,
+        format: ProgressFormat,
+        resetsAt: Date? = nil,
+        periodDurationMs: Int? = nil,
+        colorHex: String? = nil
+    )
+    case badge(label: String, text: String, colorHex: String? = nil, subtitle: String? = nil)
+
+    var label: String {
+        switch self {
+        case .text(let label, _, _, _),
+             .progress(let label, _, _, _, _, _, _),
+             .badge(let label, _, _, _):
+            return label
+        }
+    }
+
+    var isError: Bool {
+        if case .badge(let label, _, _, _) = self {
+            return label == "Error"
+        }
+        return false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case label
+        case value
+        case used
+        case limit
+        case format
+        case resetsAt
+        case periodDurationMs
+        case colorHex
+        case subtitle
+        case text
+    }
+
+    private enum LineType: String, Codable {
+        case text
+        case progress
+        case badge
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let label = try container.decode(String.self, forKey: .label)
+        switch try container.decode(LineType.self, forKey: .type) {
+        case .text:
+            self = .text(
+                label: label,
+                value: try container.decode(String.self, forKey: .value),
+                colorHex: try container.decodeIfPresent(String.self, forKey: .colorHex),
+                subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle)
+            )
+        case .progress:
+            self = .progress(
+                label: label,
+                used: try container.decode(Double.self, forKey: .used),
+                limit: try container.decode(Double.self, forKey: .limit),
+                format: try container.decode(ProgressFormat.self, forKey: .format),
+                resetsAt: try container.decodeIfPresent(Date.self, forKey: .resetsAt),
+                periodDurationMs: try container.decodeIfPresent(Int.self, forKey: .periodDurationMs),
+                colorHex: try container.decodeIfPresent(String.self, forKey: .colorHex)
+            )
+        case .badge:
+            self = .badge(
+                label: label,
+                text: try container.decode(String.self, forKey: .text),
+                colorHex: try container.decodeIfPresent(String.self, forKey: .colorHex),
+                subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle)
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let label, let value, let colorHex, let subtitle):
+            try container.encode(LineType.text, forKey: .type)
+            try container.encode(label, forKey: .label)
+            try container.encode(value, forKey: .value)
+            try container.encodeIfPresent(colorHex, forKey: .colorHex)
+            try container.encodeIfPresent(subtitle, forKey: .subtitle)
+        case .progress(let label, let used, let limit, let format, let resetsAt, let periodDurationMs, let colorHex):
+            try container.encode(LineType.progress, forKey: .type)
+            try container.encode(label, forKey: .label)
+            try container.encode(used, forKey: .used)
+            try container.encode(limit, forKey: .limit)
+            try container.encode(format, forKey: .format)
+            try container.encodeIfPresent(resetsAt, forKey: .resetsAt)
+            try container.encodeIfPresent(periodDurationMs, forKey: .periodDurationMs)
+            try container.encodeIfPresent(colorHex, forKey: .colorHex)
+        case .badge(let label, let text, let colorHex, let subtitle):
+            try container.encode(LineType.badge, forKey: .type)
+            try container.encode(label, forKey: .label)
+            try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(colorHex, forKey: .colorHex)
+            try container.encodeIfPresent(subtitle, forKey: .subtitle)
+        }
+    }
+}
+

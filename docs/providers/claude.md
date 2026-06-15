@@ -1,0 +1,38 @@
+# Claude
+
+Tracks your Claude subscription limits using the login you already have from Claude Code.
+
+## What it tracks
+
+| Metric | Meaning |
+|---|---|
+| Session | 5-hour rolling window usage |
+| Weekly | 7-day window usage |
+| Sonnet | Separate weekly Sonnet limit (plan-dependent) |
+| Extra Usage | Extra-usage credits spent against your monthly cap |
+| Today / Yesterday / Last 30 Days | Local spend estimates (see below) |
+| Plan | Your plan name (optional widget) |
+
+## Where credentials come from
+
+Sign in once with Claude Code; OpenUsage reads the same credentials, in this order:
+
+1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+2. `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR/.credentials.json`)
+3. The macOS keychain entries Claude Code maintains
+
+Tokens are refreshed automatically; rotated tokens are written back where they came from.
+
+## The spend tiles
+
+Today / Yesterday / Last 30 Days are computed **locally** from your Claude Code logs by running `ccusage` (requires [Bun](https://bun.sh)). The dollars are estimated from token counts — that's what the ⓘ on those rows means. No log data leaves your Mac.
+
+## Troubleshooting
+
+- **"Not logged in"** — run `claude` and sign in, then refresh.
+- **"Rate limited, retry in ~Nm"** — the usage API is throttling; OpenUsage shows when to expect data again and keeps your last values.
+- **Spend tiles show "No data"** — install Bun (`curl -fsSL https://bun.sh/install | bash`) so `bunx ccusage` can run.
+
+## Under the hood
+
+`GET https://api.anthropic.com/api/oauth/usage` with the Claude Code OAuth token; refresh via `platform.claude.com/v1/oauth/token`. A 401/403 triggers one token refresh and retry.

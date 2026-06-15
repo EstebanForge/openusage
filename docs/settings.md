@@ -1,0 +1,40 @@
+# Settings
+
+Settings lives inside the popover — there is no separate window. Open it with the gear button in the popover footer, or ⌘, while the popover is showing. The dashboard slides over to the Settings screen; the gear becomes a checkmark while you're there. Go back with the checkmark, the ⌘, shortcut, or Esc (Esc always backs out to the dashboard first — pressing it again closes the popover).
+
+## Startup
+
+| Setting | Options | What it does |
+|---|---|---|
+| Launch at Login | on/off | Registers the app as a login item (the system's login-item registry is the source of truth). |
+| Global Shortcut | record a shortcut | Global shortcut that toggles the popover from anywhere. Click the field and press a combo; the ⓧ clears it and disables the shortcut. |
+
+## Appearance
+
+| Setting | Options | What it does |
+|---|---|---|
+| Theme | System / Light / Dark | App-wide appearance override for the popover. |
+| Density | Default / Compact | Default breathes; Compact is a real information-dense mode — text steps down one size, rows and provider sections pull together, and Customize / Settings rows tighten with them. In both, consecutive one-line metrics (Today / Yesterday / …) pull together; Compact pulls harder. |
+| Time Format | Auto / 12-hour / 24-hour | How exact times read (e.g. "Resets today at 6:38 PM" vs "18:38"). Auto follows the system. |
+
+## Usage Display
+
+| Setting | Options | What it does |
+|---|---|---|
+| Show Usage As | Used / Left | Whether bounded metrics read "48% used" or "52% left" — same toggle as clicking a headline. |
+| Reset Times | Countdown / Exact time | "Resets in 3h 25m" vs "Resets today at 6:38 PM" — same toggle as clicking a reset label. |
+
+## Menu Bar
+
+| Setting | Options | What it does |
+|---|---|---|
+| Style | Text / Bars | How pinned metrics render in the menu bar. See [Menu bar](menu-bar.md). |
+| Refresh Every | 5 / 10 / 15 / 30 minutes | Background refresh cadence. Also controls how long cached values count as fresh. See [Refreshing](refreshing.md). |
+
+## Providers
+
+One switch per provider. Turning a provider **off** hides it everywhere (dashboard, Customize, menu bar, the collection endpoint of the [local HTTP API](local-http-api.md)) and pauses its updates. Nothing is deleted — turning it back on restores its metrics and order.
+
+## Version
+
+The app version shows in the popover footer.

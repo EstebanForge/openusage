@@ -1,0 +1,31 @@
+# Codex
+
+Tracks your ChatGPT/Codex subscription limits using the login from the Codex CLI.
+
+## What it tracks
+
+| Metric | Meaning |
+|---|---|
+| Session | 5-hour rolling window usage |
+| Weekly | 7-day window usage |
+| Extra Usage | Flex credits, shown verbatim as dollars + credits (e.g. `$31.84 · 796 credits`) |
+| Today / Yesterday / Last 30 Days | Local spend estimates (see below) |
+| Plan | Your plan name (optional widget) |
+
+## Where credentials come from
+
+Sign in once with the Codex CLI (`codex`); OpenUsage reads the same auth files (`$CODEX_HOME` respected) with a keychain fallback. Tokens refresh automatically and rotate back into the auth file.
+
+## The spend tiles
+
+Today / Yesterday / Last 30 Days are computed **locally** from your Codex logs by running `ccusage` (requires [Bun](https://bun.sh)). The dollars are estimated from token counts — that's the ⓘ on those rows. No log data leaves your Mac.
+
+## Troubleshooting
+
+- **"Not logged in"** — run `codex` and sign in, then refresh.
+- **API-key-only setups** can't read subscription usage — sign in with your ChatGPT account instead.
+- **Spend tiles show "No data"** — install Bun so `bunx ccusage` can run.
+
+## Under the hood
+
+`GET https://chatgpt.com/backend-api/wham/usage` with the Codex OAuth token; refresh via `auth.openai.com`. A 401/403 triggers one token refresh and retry.

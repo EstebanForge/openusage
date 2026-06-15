@@ -1,0 +1,22 @@
+# Menu Bar
+
+Pin your most important metrics straight into the menu bar strip.
+
+## Pinning
+
+Pin from any row's right-click menu, or from the pin that appears when hovering rows in Customize.
+
+- **6 pins total** across all providers, at most **2 per provider**.
+- When a pin isn't allowed, the pin button stays clickable — clicking it shakes and shows the reason in the footer (e.g. "All 6 pins already used").
+- The Customize footer shows your budget: `n of 6 pinned`.
+
+## Styles
+
+Settings → Menu Bar → Style:
+
+- **Text** — provider icon plus values; two pinned metrics from the same provider stack as a labeled pair.
+- **Bars** — compact vertical bars, one per pinned metric that has a limit (metrics without limits only appear in Text style).
+
+## What the strip shows
+
+The strip only renders real data. A pinned metric with nothing fetched yet is skipped; a provider whose pins all lack data disappears entirely (icon included). When nothing has data, the strip falls back to the app icon. Pins follow your Customize order.
