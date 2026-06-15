@@ -37,7 +37,9 @@ jobs:
           persist-credentials: true
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app
+        # Pin to 26.4.1: the runner's default (26.5) ships an actool that crashes on the Icon Composer
+        # `.icon` (refractivity) asset. 26.4.1 is the closest available to the toolchain it's authored on.
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app
 
       - name: Resolve tag, version, and channel
         id: meta
