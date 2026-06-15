@@ -62,8 +62,8 @@ struct CursorBundledModelManifestSource: CursorModelManifestSource {
     func loadManifest() throws -> CursorModelManifest {
         // `.copy("Resources/model_manifest.json")` lands the file at the bundle root, so look there
         // first; the "Resources" subdirectory lookup is a defensive fallback if SwiftPM nests it.
-        let url = Bundle.module.url(forResource: "model_manifest", withExtension: "json")
-            ?? Bundle.module.url(forResource: "model_manifest", withExtension: "json", subdirectory: "Resources")
+        let url = Bundle.openUsageResources.url(forResource: "model_manifest", withExtension: "json")
+            ?? Bundle.openUsageResources.url(forResource: "model_manifest", withExtension: "json", subdirectory: "Resources")
         guard let url else {
             throw CocoaError(.fileNoSuchFile)
         }

@@ -58,9 +58,9 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
 # Stage every SwiftPM resource bundle produced by the build (the app's own
-# OpenUsage_OpenUsage.bundle, which carries the provider SVGs + model manifest).
-# Bundle.module resolves to its bundle sitting next to the binary, so it must
-# ship alongside the executable.
+# OpenUsage_OpenUsage.bundle, which carries the provider SVGs + model manifest)
+# into Contents/Resources, the standard app layout. Bundle.openUsageResources
+# (see Support/ResourceBundle.swift) loads it from there.
 shopt -s nullglob
 for bundle in "$BUILD_DIR"/*.bundle; do
   cp -R "$bundle" "$APP_RESOURCES/$(basename "$bundle")"
