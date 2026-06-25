@@ -1,3 +1,6 @@
+# Merged from CLAUDE.md and AGENTS.md - Thu Jun 25 15:53:41 -04 2026
+
+## From AGENTS.md:
 # AGENTS.md
 
 OpenUsage is a SwiftPM-based SwiftUI menu-bar app for macOS that shows AI provider usage widgets (Claude, Codex, Cursor, Grok, Devin, and more).
@@ -57,3 +60,6 @@ Always fail loudly into error logging and show friendly errors to the user. Do n
 - Use title case for any hardcoded copy used as a title.
 - Match the existing design language; OpenUsage has a specific look and feel.
 - Only add tooltips (`hoverTooltip`) when explicitly asked to. Don't add them proactively to new controls.
+
+## From CLAUDE.md:
+@AGENTS.md

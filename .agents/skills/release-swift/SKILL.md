@@ -1,6 +1,6 @@
 ---
 name: release-swift
-description: Cut a release of OpenUsage (Swift menu-bar app): pick a version, generate a categorized changelog, tag from `main`, and publish the GitHub Release with notes. Use to ship an Early Access beta or a stable release.
+description: "Cut a release of OpenUsage (Swift menu-bar app): pick a version, generate a categorized changelog, tag from `main`, and publish the GitHub Release with notes. Use to ship an Early Access beta or a stable release."
 ---
 
 # Release Swift
