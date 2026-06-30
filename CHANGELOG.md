@@ -1,5 +1,195 @@
 # Changelog
 
+## v0.7.1-beta.6
+
+### New Features
+- copilot: track AI Credits + Extra Usage; fix paid quota rendering ([#807](https://github.com/robinebers/openusage/pull/807)) by @robinebers
+- codex: bring back GPT-5.3-Codex-Spark rate-limit meters ([#806](https://github.com/robinebers/openusage/pull/806)) by @robinebers
+- openrouter: add Activity and Credits quick-link buttons ([#795](https://github.com/robinebers/openusage/pull/795)) by @robinebers
+- providers: add quick-link buttons for Devin and Copilot ([#799](https://github.com/robinebers/openusage/pull/799)) by @robinebers
+- Customize: provider list → detail, on/off + API keys in Customize, stars ([#797](https://github.com/robinebers/openusage/pull/797)) by @robinebers
+
+### Bug Fixes
+- tests: allow OpenRouter Activity/Credits quick-link labels ([#805](https://github.com/robinebers/openusage/pull/805)) by @robinebers
+
+### Chores
+- strict issue-first PR policy + faster stale + AGENTS-aligned PR template ([#804](https://github.com/robinebers/openusage/pull/804)) by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.1-beta.5...v0.7.1-beta.6](https://github.com/robinebers/openusage/compare/v0.7.1-beta.5...v0.7.1-beta.6)
+
+- [c6e4cb9](https://github.com/robinebers/openusage/commit/c6e4cb95137d9d0be3d953d6f512628153054265) feat(copilot): track AI Credits + Extra Usage; fix paid quota rendering (#807) by @robinebers
+- [149dcd9](https://github.com/robinebers/openusage/commit/149dcd94ef00968826a2427a79be23a335e40b23) feat(codex): bring back GPT-5.3-Codex-Spark rate-limit meters (#796) (#806) by @robinebers
+- [5452c3f](https://github.com/robinebers/openusage/commit/5452c3f4ae7efdd852683b62889c33f2f114a47b) fix(tests): allow OpenRouter Activity/Credits quick-link labels (#805) by @robinebers
+- [7a5daaa](https://github.com/robinebers/openusage/commit/7a5daaa3dc307244a48bcb539941996c93e1557e) chore: strict issue-first PR policy + faster stale + AGENTS-aligned PR template (#804) by @robinebers
+- [807ee3f](https://github.com/robinebers/openusage/commit/807ee3f1bfd15f9528c59d4bc10102645d3809b3) feat(openrouter): add Activity and Credits quick-link buttons (#795) by @robinebers
+- [402824d](https://github.com/robinebers/openusage/commit/402824d9cafb7fa47585c2c3621a212d9d7e8c9c) feat(providers): add quick-link buttons for Devin and Copilot (#799) by @robinebers
+- [2fccb51](https://github.com/robinebers/openusage/commit/2fccb5127fff7b86d13b728f9f0b45ffd167e3d6) Customize: provider list → detail, on/off + API keys in Customize, stars (#797) by @robinebers
+
+## v0.7.1-beta.5
+
+### New Features
+- Add Z.ai provider for GLM Coding Plan usage tracking ([#793](https://github.com/robinebers/openusage/pull/793)) by @robinebers
+
+### Bug Fixes
+- Surface re-login warning when Claude login lacks the user:profile scope ([#794](https://github.com/robinebers/openusage/pull/794)) by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.1-beta.4...v0.7.1-beta.5](https://github.com/robinebers/openusage/compare/v0.7.1-beta.4...v0.7.1-beta.5)
+
+- [9790407](https://github.com/robinebers/openusage/commit/9790407efcdd0c2a1775d7779d46eecd1d675be4) feat(zai): add Z.ai provider for GLM Coding Plan usage tracking (#783) (#793) by @robinebers
+- [e040e86](https://github.com/robinebers/openusage/commit/e040e86241f453323027e131c7fbeed257b9644b) fix(claude): surface re-login warning when login lacks user:profile scope (#782) (#794) by @robinebers
+
+## v0.7.1-beta.4
+
+### New Features
+- Re-enable Cursor spend tracking and warn on unknown-model spend ([#789](https://github.com/robinebers/openusage/pull/789)) by @robinebers
+
+### Bug Fixes
+- No-usage period reads "No data" for every provider ([#790](https://github.com/robinebers/openusage/pull/790)) by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.1-beta.3...v0.7.1-beta.4](https://github.com/robinebers/openusage/compare/v0.7.1-beta.3...v0.7.1-beta.4)
+
+- [9f5eb51](https://github.com/robinebers/openusage/commit/9f5eb51bcdaa01a7612ad0cd0ef557325fdfcb99) feat(cursor): re-enable spend tracking + warn on unknown-model spend (#789) by @robinebers
+- [028c25c](https://github.com/robinebers/openusage/commit/028c25cf686b17c439e19192b3e5a1a466c7f887) fix(spend): no-usage period reads "No data" for every provider (#790) by @robinebers
+
+## v0.7.1-beta.3
+
+### Bug Fixes
+- Resolve env-var API keys (e.g. `OPENROUTER_API_KEY`) from the login shell in packaged builds, and remove the "Stored in …" caption from the API Keys editor ([#788](https://github.com/robinebers/openusage/pull/788)) by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.1-beta.2...v0.7.1-beta.3](https://github.com/robinebers/openusage/compare/v0.7.1-beta.2...v0.7.1-beta.3)
+
+- [8d0b6c7](https://github.com/robinebers/openusage/commit/8d0b6c74415a644ef4f39258433df1da261fae25) fix(providers): resolve env-var API keys from the login shell in packaged builds (#788) by @robinebers
+
+## v0.7.1-beta.2
+
+### New Features
+- Add OpenRouter usage provider ([#763](https://github.com/robinebers/openusage/pull/763)) by @robinebers
+- Quota pace alerts — 3 triggers, launch-prime, per-app stacking ([#786](https://github.com/robinebers/openusage/pull/786)) by @robinebers
+- Share Screenshot footer submenu + copied-to-clipboard pill ([#785](https://github.com/robinebers/openusage/pull/785)) by @robinebers
+
+### Bug Fixes
+- Refresh Codex OAuth token by JWT exp, not a hardcoded 8-day age ([#769](https://github.com/robinebers/openusage/pull/769)) by @robinebers
+
+### Chores
+- Drop parsing of retired Codex per-model and review rate limits by @robinebers
+- Restore README hero screenshot and trailing newline by @robinebers
+- Add Installation section with Homebrew cask and latest release DMG by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.1-beta.1...v0.7.1-beta.2](https://github.com/robinebers/openusage/compare/v0.7.1-beta.1...v0.7.1-beta.2)
+
+- [386fcfe](https://github.com/robinebers/openusage/commit/386fcfeb3186ec9f3fe3bd43a8c7d7a4db8efd21) chore(codex): drop parsing of retired per-model and review rate limits by @robinebers
+- [8360e93](https://github.com/robinebers/openusage/commit/8360e93717c3af04ff27cf49cd1d7274693dac4f) feat(openrouter): add OpenRouter usage provider (#763) by @robinebers
+- [1cf2eb4](https://github.com/robinebers/openusage/commit/1cf2eb4f418299707aac50b60df324c1556a2374) feat(notifications): quota pace alerts — 3 triggers, launch-prime, per-app stacking (#633) (#786) by @robinebers
+- [fd0890e](https://github.com/robinebers/openusage/commit/fd0890ef65536ffdd4875e7a75a1531850f70ba1) feat(share): Share Screenshot footer submenu + copied-to-clipboard pill (#785) by @robinebers
+- [b50efbb](https://github.com/robinebers/openusage/commit/b50efbb41f71520112be32f823c896de34813823) docs: restore README hero screenshot and trailing newline by @robinebers
+- [2eada69](https://github.com/robinebers/openusage/commit/2eada69bc904e9268264713bc87761afe94f8f7a) docs: add Installation section with Homebrew cask and latest release DMG by @robinebers
+- [42ce1e2](https://github.com/robinebers/openusage/commit/42ce1e2cde443d443dde59c9ccd941adf26af44b) fix(codex): refresh OAuth token by JWT exp, not a hardcoded 8-day age (#516) (#769) by @robinebers
+
+## v0.7.1-beta.1
+
+### New Features
+- Add GitHub Copilot usage provider ([#764](https://github.com/robinebers/openusage/pull/764)) by @robinebers
+- Undo widget removal ([#603](https://github.com/robinebers/openusage/pull/771)) by @robinebers
+- Price GLM 5.2 in the spend manifest ([#781](https://github.com/robinebers/openusage/pull/781)) by @robinebers
+- Bring back provider quick-link buttons ([#596](https://github.com/robinebers/openusage/pull/779)) by @robinebers
+- Per-provider Copy as Image card ([#762](https://github.com/robinebers/openusage/pull/778)) by @robinebers
+
+### Bug Fixes
+- Show "Not started" for unused 5-hour quota pools (Antigravity) ([#761](https://github.com/robinebers/openusage/pull/761)) by @robinebers
+
+### Chores
+- Bump github.com/sindresorhus/keyboardshortcuts ([#766](https://github.com/robinebers/openusage/pull/766)) by @dependabot
+- Bump actions/checkout from 6 to 7 ([#765](https://github.com/robinebers/openusage/pull/765)) by @dependabot
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.0...v0.7.1-beta.1](https://github.com/robinebers/openusage/compare/v0.7.0...v0.7.1-beta.1)
+
+- [c74998a](https://github.com/robinebers/openusage/commit/c74998a6bc1f0e53855c936a36e3a2ef71a4df98) feat(copilot): add GitHub Copilot usage provider (#764) by @robinebers
+- [7530469](https://github.com/robinebers/openusage/commit/75304694e84ed86b5e3cdc425e4c3fb24bc3b26c) fix(antigravity): show "Not started" for unused 5-hour quota pools (#761) by @robinebers
+- [6c3d034](https://github.com/robinebers/openusage/commit/6c3d034a990bdb618d8a3ea7cab3d0c8002ac9d9) feat(customize): undo widget removal (#603) (#771) by @robinebers
+- [f159788](https://github.com/robinebers/openusage/commit/f159788361fc29f6ee84ac722d8e087a327a4de9) feat(cursor): price GLM 5.2 in the spend manifest (#781) by @robinebers
+- [bf7fa4d](https://github.com/robinebers/openusage/commit/bf7fa4d6e89fc6a34e11f02f65b645257d985a02) feat(providers): bring back provider quick-link buttons (#596) (#779) by @robinebers
+- [78ef4a7](https://github.com/robinebers/openusage/commit/78ef4a70c368f847302ebf71da296445146271eb) feat(share): per-provider Copy as Image card (#762) (#778) by @robinebers
+- [c148a4c](https://github.com/robinebers/openusage/commit/c148a4c35c929fb8fd3d0363181f625f71d3418a) chore(deps): bump github.com/sindresorhus/keyboardshortcuts (#766) by @dependabot
+- [e62400d](https://github.com/robinebers/openusage/commit/e62400de6ce09eeb911013721ac15705815e3771) chore(deps): bump actions/checkout from 6 to 7 (#765) by @dependabot
+
+## v0.7.0
+
+**A brand-new OpenUsage.** The app has been rebuilt from the ground up to be faster, lighter, and feel right at home on your Mac.
+
+> **Coming from an earlier version?** This is a fresh start. Your usage and sign-ins are still read straight from your machine — but the app and its look are all new.
+
+### Highlights
+
+- **Rebuilt for Mac** — quicker to open, lighter to run, and a clean, modern look. Runs on macOS Sequoia and later, on both Apple Silicon and Intel Macs.
+- **More providers** — Claude, Codex, Cursor, Grok, Devin, and Antigravity, all in one place.
+- **Usage trends** — a quick sparkline of recent usage for Claude, Codex, Cursor, and Grok.
+- **Pacing** — see whether you're ahead or behind, with a "Limit in 3h 45m" estimate and an optional always-on view.
+- **Clearer spend** — cost and tokens shown side by side, with a clean "$0.00 · 0 tokens" when there's nothing to show yet.
+- **Codex limit resets** — see when your limits refresh, right in the menu bar and popover.
+- **Make it yours** — resize the panel, expand extra metrics, reorder providers, pin your favorites to the menu bar, and right-click for quick actions.
+- **Private by default** — optional, anonymous usage and crash reporting you can turn off anytime.
+
+### New in this release
+
+- **Your settings now stick** — updating no longer resets your layout, pins, and preferences.
+- **More reliable Claude sign-in** — steadier connection and clearer messages when something needs attention.
+- **Cursor** — spend is temporarily hidden while Cursor's own usage data is delayed, so you don't see misleading numbers.
+- Smaller fixes and polish throughout.
+
+---
+
+### Changelog
+
+**Full Changelog**: [v0.6.28...v0.7.0](https://github.com/robinebers/openusage/compare/v0.6.28...v0.7.0)
+
+Thanks to @robinebers, @davidarny, and @validatedev.
+
+## v0.7.0-beta.16
+
+### New Features
+- Anonymous opt-out PostHog usage analytics ([#735](https://github.com/robinebers/openusage/pull/735)) by @robinebers
+- Anonymous crash + uncaught-exception reporting ([#739](https://github.com/robinebers/openusage/pull/739)) by @robinebers
+- Add Antigravity provider ([#745](https://github.com/robinebers/openusage/pull/745)) by @robinebers
+
+### Bug Fixes
+- Remove discontinued Sonnet weekly limit ([#744](https://github.com/robinebers/openusage/pull/744)) by @robinebers
+- ccusage: local-time day buckets, no fabricated $0.00 for unreported days ([#746](https://github.com/robinebers/openusage/pull/746)) by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.0-beta.15...v0.7.0-beta.16](https://github.com/robinebers/openusage/compare/v0.7.0-beta.15...v0.7.0-beta.16)
+
+- [9d732c7](https://github.com/robinebers/openusage/commit/9d732c754e30e2105885214d4aae60c0c51a969d) fix(ccusage): local-time day buckets, no fabricated $0.00 for unreported days (#746) by @robinebers
+- [e5cf2f7](https://github.com/robinebers/openusage/commit/e5cf2f7cc85c2cd278d6ec96d942d626eff33ba7) fix(claude): remove discontinued Sonnet weekly limit (#744) by @robinebers
+- [dc2a80d](https://github.com/robinebers/openusage/commit/dc2a80dcd4bc22a12d2319d69d4b99e0cf4a2967) feat(antigravity): add Antigravity provider (#745) by @robinebers
+- [67e546b](https://github.com/robinebers/openusage/commit/67e546b77063ac40328bed68e6394923038b2a66) feat(telemetry): anonymous crash + uncaught-exception reporting (#739) by @robinebers
+- [c344732](https://github.com/robinebers/openusage/commit/c34473212c85812a8dd65c596badeeb22eb09fe7) feat(telemetry): anonymous opt-out PostHog usage analytics (#735) by @robinebers
+- [1765ba7](https://github.com/robinebers/openusage/commit/1765ba7499cdb15b2ad1ecfa95e440f3475ea447) docs: simplify release-swift skill and document release channels by @robinebers
+- [57d210a](https://github.com/robinebers/openusage/commit/57d210a9b0e4d9ec242a9745b110aa36d544c34a) chore: preserve Tauri updater manifest during Swift flip by @robinebers
+- [4d1158b](https://github.com/robinebers/openusage/commit/4d1158b3431505864cb9178abe9b8e52e1872dda) chore: prepare Swift branch cutover by @robinebers
+- [a6d6050](https://github.com/robinebers/openusage/commit/a6d605069a729e1f1b8f2848f89757d332a4f8ab) chore: add macOS agent skills and skills-lock by @robinebers
+
+---
+
 ## v0.7.0-beta.15
 
 ### New Features

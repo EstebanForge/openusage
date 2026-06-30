@@ -11,22 +11,18 @@ This file documents the engineering conventions for the project. Read it before 
 
 AGENTS.md is the source of truth for agent instructions in this repository. CLAUDE.md files may only point to the nearest AGENTS.md file with `@AGENTS.md`; do not add guidance, duplicate instructions, or project rules to CLAUDE.md.
 
-> **Repository note:** This is the native Swift edition of OpenUsage. Active development happens on the `main` branch.
+> **Repository note:** This is the native Swift edition of OpenUsage. Active development happens on the `main` branch. (NOT the legacy Tauri version which now sits in the `tauri-legacy` branch)
 
-## Rollout: Tauri to Swift (read first)
+## Releases
 
-This Swift edition replaces the original Tauri app. Both editions stay in the same GitHub repo and remain independent.
-- The `main` branch is the active Swift development line; it ships the Swift edition via `.github/workflows/release.yml` (Sparkle appcast on `gh-pages`).
-- The Tauri edition is preserved on `tauri-legacy`. Its final release is `v0.6.28`, which shows the migration banner.
+`main` is the active development line; it ships via `.github/workflows/release.yml` (Sparkle appcast on `gh-pages`). Cut releases with the release-swift skill.
 
 ### Guardrails (do not break)
-- Version lanes: Swift owns `0.7.x` and up; Tauri stays on `0.6.x`. Never use a `0.6.x` number here.
-- Beta Swift releases use `-beta.N` tags and stay GitHub pre-releases on Sparkle's Early Access channel. Stable Swift releases use plain tags, become GitHub "Latest", and must carry forward the final Tauri `latest.json` so older Tauri installs can still update to `v0.6.28`. `release.yml` handles this; verify it with the release-swift skill.
+- Versions are `0.7.x` and up. Never reuse a `0.6.x` number — those are the original edition's released tags, now frozen on the `tauri-legacy` branch (final release `v0.6.28`).
+- **Never increase the version number on your own initiative — always ask for explicit approval first.** The version is a deliberate owner decision: propose the number and wait for explicit sign-off before tagging or cutting a release.
+- Beta releases use `-beta.N` tags and stay GitHub pre-releases on Sparkle's Early Access channel. Stable releases use plain tags and become GitHub "Latest".
+- Stable releases must carry forward the legacy `latest.json` so any remaining `0.6.x` installs can still update to `v0.6.28`. `release.yml` handles this; verify it with the release-swift skill.
 - Never leave a release in Draft, and never ship blank notes: the release-swift skill generates the changelog and verifies the published release after every cut.
-- The Tauri edition is frozen and stays in the repo forever. Do not cut another Tauri release unless there is an emergency.
-
-### Phases
-(1) private Swift testing via Early Access, (2) final Tauri goodbye release `v0.6.28`, (3) make Swift the default `main` branch and preserve old Tauri as `tauri-legacy`, (4) ship Swift stable releases from `main` with plain tags.
 
 ## Architecture
 
@@ -35,9 +31,32 @@ This Swift edition replaces the original Tauri app. Both editions stay in the sa
 - Providers implement the small `ProviderRuntime` protocol: an auth store reads credentials already on the user's machine, a usage client calls the provider's API, and a mapper normalizes the response into `MetricLine` values. The UI renders those normalized values.
 - See `docs/` for behavior docs and the developer docs (architecture overview, adding a provider).
 
+## Providers
+
+Conventions for the per-provider modules under `Sources/OpenUsage/Providers/<Name>/`.
+
+- **Structure:** one folder per provider with an auth store (reads credentials already on the user's machine), a usage client (calls the provider API), and a mapper (normalizes to `MetricLine`), conforming to `ProviderRuntime`. See `docs/adding-a-provider.md`.
+- **Default order:** Claude, Codex, Cursor first (the established providers, in that order), then every other provider alphabetically by display name (Antigravity, Devin, Grok, …). The order is the array order in `AppContainer`, which seeds `LayoutStore`'s default provider order (and `resetToDefault`). A new provider slots into the alphabetical tail.
+- **Metric placement defaults:** when adding or changing a metric, confirm its four defaults with the owner before choosing — never pick silently:
+  1. enabled on/off (`DefaultLayout.metricIDs`),
+  2. primary vs. secondary — above the fold vs. below the per-provider "Shown on expand" caret (`DefaultLayout.expandedMetricIDs`). Note: a provider always keeps at least one primary row — the dashboard promotes all metrics to primary when every one is marked secondary, so a fully-secondary provider isn't possible; leave one metric primary for the caret to appear,
+  3. pinned to the menu bar (`DefaultLayout.pinnedMetricIDs`),
+  4. order (within a provider, the `widgetDescriptors` declaration order).
+
 ## Running / Testing Changes
 
 - There is no hot reload. The app is a long-lived menu-bar process, so **every code change requires a full rebuild and restart of the running app** to take effect — kill the running instance, rebuild, and relaunch before testing.
+
+## Pull Requests
+
+Every PR description must follow this structure so reviewers can skim it quickly:
+
+- **TL;DR** — open with a one- or two-sentence plain-English summary of the change.
+- **What was happening** — plain-English bullet points describing the prior behavior, bug, or gap that motivated the change.
+- **What this changes** — bullet points describing what the PR actually changes.
+- **Heads-up** (optional) — noteworthy things a reviewer or future maintainer should consider (risks, follow-ups, trade-offs).
+- **Tests** (optional) — how the change was verified.
+- **Screenshots** (optional in general, but **required for any PR that makes a visual change**) — images of the affected UI after the change.
 
 ## Documentation
 
@@ -49,11 +68,11 @@ This Swift edition replaces the original Tauri app. Both editions stay in the sa
 - Add a regression test when fixing a bug, where it fits.
 - Keep files under ~500 LOC; split or refactor as needed.
 - No new dependencies without justification.
-- Follow the existing per-provider folder structure when adding a provider.
+- When adding a provider, follow the conventions in "## Providers".
 
 ## Error Handling
 
-Always fail loudly into error logging and show friendly errors to the user. Do not add silent fallbacks that hide real problems. Only validate at system boundaries (user input, external APIs); trust internal code and framework guarantees.
+Always fail loudly into error logging (log file, PostHog) and show friendly errors to the user. Do not add silent fallbacks that hide real problems. Only validate at system boundaries (user input, external APIs); trust internal code and framework guarantees.
 
 ## UI
 

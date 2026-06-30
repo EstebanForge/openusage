@@ -37,6 +37,10 @@ struct WidgetData: Hashable {
     /// credits — one entry per still-available credit). Empty for every other row. Kept as raw `Date`s so
     /// the tooltip formats live and follows the global relative/absolute mode (see `expiryTooltip`).
     var expiriesAt: [Date] = []
+    /// Names of models this period's spend used that the pricing manifest can't price (Cursor spend tiles
+    /// only). Their tokens are counted but their cost is $0, so the period's dollar figure is incomplete.
+    /// Drives the label warning triangle and its hover list. Empty for every other row.
+    var unknownModels: [String] = []
     var periodDurationMs: Int?
     var valueTextOverride: String?
     var subtitleOverride: String?
@@ -87,9 +91,20 @@ struct WidgetData: Hashable {
 
     /// Ring fill 0...1. Uses the same rounded value the headline shows, so the ring and the number
     /// never disagree — a value that reads "0%" draws an empty ring instead of a tiny sliver.
+    /// Display-mode-dependent: `remaining/limit` when the meter shows "remaining", `used/limit` when
+    /// it shows "used". Use `remainingFraction` when the value must mean "remaining" regardless of
+    /// display mode (e.g. quota notifications' under-10% check).
     var fraction: Double {
         guard let limit, limit > 0 else { return 0 }
         return min(max(roundedDisplayValue / limit, 0), 1)
+    }
+
+    /// Remaining share of the limit, 0...1, independent of the used/remaining display mode. Quota
+    /// notifications use this for the "under 10% remaining" rule so the alert always reflects actual
+    /// remaining, whether the headline shows used or remaining.
+    var remainingFraction: Double {
+        guard let limit, limit > 0 else { return 0 }
+        return min(max((limit - used) / limit, 0), 1)
     }
 
     /// Severity bands for the meter fill color (see `MeterState.severity`).
@@ -338,6 +353,21 @@ struct WidgetData: Hashable {
         return ([header] + entries).joined(separator: "\n")
     }
 
+    /// True when this period's spend used at least one model the pricing manifest can't price, so its
+    /// dollar figure is incomplete. Drives the label warning triangle on the Cursor spend tiles.
+    var hasUnknownModels: Bool {
+        hasData && !unknownModels.isEmpty
+    }
+
+    /// Hover copy for the unknown-model warning triangle: a header naming the problem, then each unpriced
+    /// model on its own line. Singular/plural header to read naturally. `nil` when the period priced every
+    /// model it used (the common case), so the triangle and its tooltip stay off.
+    var unknownModelTooltip: String? {
+        guard hasUnknownModels else { return nil }
+        let header = unknownModels.count == 1 ? "Unknown model found" : "Unknown models found"
+        return ([header] + unknownModels.map { "- \($0)" }).joined(separator: "\n")
+    }
+
     /// Secondary line under an unbounded row's detail (e.g. "on-device estimate"); nil with no real data.
     var unboundedSubtitle: String? {
         guard hasData else { return nil }
@@ -497,7 +527,8 @@ extension WidgetData {
 
     /// Trailing text on the bounded primary row, reset-display-mode aware. Priority mirrors
     /// `boundedSubtitle`, but a concrete reset honors `resetDisplayMode` (relative ⟷ absolute).
-    /// Codex and Claude session rows show "Not started" while the rolling window has not begun.
+    /// Codex, Claude, and Antigravity session rows show "Not started" while the rolling window has
+    /// not begun.
     func boundedTrailingText(now: Date = Date()) -> String? {
         guard hasData else { return Self.noDataSubtitle }
         if let subtitleOverride { return subtitleOverride }
@@ -510,13 +541,14 @@ extension WidgetData {
         return boundedSubtitle // period cadence / dollar limit / count suffix — nothing to flip
     }
 
-    /// Codex and Claude session meters only: a "Not started" state for the current window when nothing
-    /// has been spent in it yet. Driven by frozen usage (`used == 0`), not a window-timing read — the
-    /// `resetsAt - now ≈ full period` test is only valid the instant the snapshot is captured, then
-    /// drifts every second until the next refresh, which split the headline from the label (headline
+    /// Codex, Claude, and Antigravity session meters only: a "Not started" state for the current window
+    /// when nothing has been spent in it yet. Driven by frozen usage (`used == 0`), not a window-timing
+    /// read — the `resetsAt - now ≈ full period` test is only valid the instant the snapshot is captured,
+    /// then drifts every second until the next refresh, which split the headline from the label (headline
     /// "100% left" while the label fell back to "Resets in 5h"). Usage is the stable, snapshot-consistent
-    /// signal: Codex's whole-percent floor is normalized to 0 at a fresh window in its mapper, and Claude
-    /// reports 0 utilization directly, so zero means the same for both — the current window is unused.
+    /// signal: Codex's whole-percent floor is normalized to 0 at a fresh window in its mapper, Claude
+    /// reports 0 utilization directly, and Antigravity's mapper rounds its fraction-derived percent (so a
+    /// pool under ~0.5% used also reads 0). In each case zero means the window is effectively unused.
     /// Still gated on `now < resetsAt`: once the reset has passed the snapshot is stale, so we drop the
     /// "Not started" claim and let the row fall back to the normal "Resets soon"/countdown formatting.
     func isFreshSessionWindow(now: Date = Date()) -> Bool {
@@ -525,7 +557,12 @@ extension WidgetData {
         return now < resetsAt
     }
 
-    private static let sessionWindowWidgetIDs: Set<String> = ["codex.session", "claude.session"]
+    private static let sessionWindowWidgetIDs: Set<String> = [
+        "codex.session", "claude.session",
+        // Antigravity's three quota pools are rolling 5-hour windows too: an unused pool reports
+        // `used == 0` with a reset a full period out, so it gets the same "Not started" treatment.
+        "antigravity.geminiPro", "antigravity.geminiFlash", "antigravity.claude"
+    ]
 
     /// True when the bounded primary row's trailing text is a concrete reset countdown (so the row makes
     /// it the clickable toggle). False for limit/suffix context, fresh session windows, or no reset date.

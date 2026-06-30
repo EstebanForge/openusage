@@ -20,11 +20,15 @@ What the app does and how it behaves. These pages describe **behavior, not visua
 
 What each provider tracks, where its credentials come from, and what to do when it shows an error.
 
+- [Antigravity](providers/antigravity.md)
 - [Claude](providers/claude.md)
 - [Codex](providers/codex.md)
+- [Copilot](providers/copilot.md)
 - [Cursor](providers/cursor.md)
 - [Devin](providers/devin.md)
 - [Grok](providers/grok.md)
+- [OpenRouter](providers/openrouter.md)
+- [Z.ai](providers/zai.md)
 
 ## For developers
 

@@ -148,10 +148,81 @@ extension DevinUsageError: CategorizedError {
     }
 }
 
+extension CopilotAuthError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .notLoggedIn: .notLoggedIn
+        case .tokenInvalid: .authExpired
+        }
+    }
+}
+
+extension CopilotUsageError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        case .quotaUnavailable: .notAvailable
+        }
+    }
+}
+
+extension OpenRouterAuthError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .missingKey: .notLoggedIn
+        case .invalidKey: .authInvalid
+        case .saveFailed, .deleteFailed: .other
+        }
+    }
+}
+
+extension OpenRouterUsageError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        }
+    }
+}
+
+extension ZAIAuthError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .missingKey: .notLoggedIn
+        case .invalidKey: .authInvalid
+        case .saveFailed, .deleteFailed: .other
+        }
+    }
+}
+
+extension ZAIUsageError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        case .noCodingPlan: .notAvailable
+        }
+    }
+}
+
 extension HTTPClientError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
         case .invalidResponse: .decoding
+        }
+    }
+}
+
+extension AntigravityError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .notSignedIn: .notLoggedIn
+        case .authExpired: .authExpired
+        case .unavailable: .network
         }
     }
 }

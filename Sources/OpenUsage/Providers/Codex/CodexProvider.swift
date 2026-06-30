@@ -2,7 +2,15 @@ import Foundation
 
 @MainActor
 final class CodexProvider: ProviderRuntime {
-    let provider = Provider(id: "codex", displayName: "Codex", icon: .providerMark("codex"))
+    let provider = Provider(
+        id: "codex",
+        displayName: "Codex",
+        icon: .providerMark("codex"),
+        links: [
+            .init(label: "Status", url: "https://status.openai.com/"),
+            .init(label: "Dashboard", url: "https://chatgpt.com/codex/settings/usage")
+        ]
+    )
 
     let authStore: CodexAuthStore
     let usageClient: CodexUsageClient
@@ -25,6 +33,11 @@ final class CodexProvider: ProviderRuntime {
         [
             .percent(id: "codex.session", provider: provider, title: "Session"),
             .percent(id: "codex.weekly", provider: provider, title: "Weekly"),
+            // Model-specific Spark limits (GPT-5.3-Codex-Spark), parsed from `additional_rate_limits`.
+            // Declared right after Weekly so they group with the core rate-limit meters; seeded as
+            // secondary (below the caret) and unpinned in `DefaultLayout`.
+            .percent(id: "codex.spark", provider: provider, title: "Spark"),
+            .percent(id: "codex.sparkWeekly", provider: provider, title: "Spark Weekly"),
             .combined(id: "codex.credits", provider: provider, title: "Extra Usage", metricLabel: "Credits"),
             .values(id: "codex.rateLimitResets", provider: provider, title: "Rate Limit Resets", metricLabel: "Rate Limit Resets"),
             .usageTrend(provider: provider)
@@ -67,6 +80,17 @@ final class CodexProvider: ProviderRuntime {
                 throw CodexAuthError.usageAPIKey
             }
             throw CodexAuthError.notLoggedIn
+        }
+
+        if authStore.needsRefresh(authState.auth) {
+            // The `codex` CLI may have rotated the token on disk since we loaded it. Re-read the live
+            // credential first and adopt its (newer) access token — refreshing our stale copy would send
+            // an already-rotated refresh_token and trip `refresh_token_reused` (issue #516).
+            if let live = reloadLiveAuth(source: authState.source),
+               let liveToken = live.auth.tokens?.accessToken, !liveToken.isEmpty {
+                authState = live
+                accessToken = liveToken
+            }
         }
 
         if authStore.needsRefresh(authState.auth),
@@ -128,6 +152,19 @@ final class CodexProvider: ProviderRuntime {
             connectionFailed: CodexUsageError.connectionFailed,
             authExpired: CodexAuthError.tokenExpired
         )
+    }
+
+    /// Re-reads the credential from its original source (the same on-disk file or keychain entry) so a
+    /// token the `codex` CLI rotated out-of-band is picked up before we attempt our own refresh. Reads
+    /// only that one source — matching how `codex` reads the single `auth.json` from `CODEX_HOME` —
+    /// rather than re-scanning every candidate path.
+    private func reloadLiveAuth(source: CodexAuthState.Source) -> CodexAuthState? {
+        switch source {
+        case .file(let path):
+            return authStore.loadAuth(at: path)
+        case .keychain:
+            return authStore.loadKeychainAuth()
+        }
     }
 
     private func refreshAccessToken(authState: inout CodexAuthState, refreshToken: String) async throws -> String {

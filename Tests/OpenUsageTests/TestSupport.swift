@@ -32,6 +32,10 @@ final class FakeFiles: TextFileAccessing, @unchecked Sendable {
     func writeText(_ path: String, _ text: String) throws {
         files[path] = text
     }
+
+    func remove(_ path: String) throws {
+        files.removeValue(forKey: path)
+    }
 }
 
 final class FakeKeychain: KeychainAccessing, @unchecked Sendable {
@@ -146,6 +150,31 @@ final class CountingProviderRuntime: ProviderRuntime {
     func refresh() async -> ProviderSnapshot {
         refreshCount += 1
         return snapshot
+    }
+}
+
+/// A runtime that returns `first` on the first refresh and `second` on every refresh after — for
+/// sequences like a success that later turns into a failure (e.g. testing that a hard error takes
+/// precedence over a stale soft warning from the prior success).
+@MainActor
+final class TogglingProviderRuntime: ProviderRuntime {
+    let provider: Provider
+    let widgetDescriptors: [WidgetDescriptor]
+    private let first: ProviderSnapshot
+    private let second: ProviderSnapshot
+    private var refreshed = false
+
+    init(provider: Provider, descriptors: [WidgetDescriptor], first: ProviderSnapshot, second: ProviderSnapshot) {
+        self.provider = provider
+        self.widgetDescriptors = descriptors
+        self.first = first
+        self.second = second
+    }
+
+    func refresh() async -> ProviderSnapshot {
+        if refreshed { return second }
+        refreshed = true
+        return first
     }
 }
 

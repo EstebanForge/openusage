@@ -11,6 +11,70 @@ final class CodexAuthStoreTests: XCTestCase {
         XCTAssertEqual(auth?.tokens?.accessToken, "token")
     }
 
+    // MARK: needsRefresh (issue #516 — refresh by JWT exp, not a hardcoded 8-day age)
+
+    func testValidFutureExpAccessTokenDoesNotNeedRefresh() {
+        // A JWT whose `exp` is comfortably in the future must NOT trigger a proactive refresh, even
+        // when `last_refresh` is old/missing — the old 8-day rule refreshed a still-valid token and
+        // tripped refresh_token_reused.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = CodexAuthStore(now: { now })
+        let auth = CodexAuth(
+            tokens: CodexTokens(accessToken: jwt(exp: now.addingTimeInterval(60 * 60))),
+            lastRefresh: nil
+        )
+
+        XCTAssertFalse(store.needsRefresh(auth))
+    }
+
+    func testNearExpiryAccessTokenNeedsRefresh() {
+        // Within the 5-minute window of `exp` ⇒ refresh now.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = CodexAuthStore(now: { now })
+        let auth = CodexAuth(
+            tokens: CodexTokens(accessToken: jwt(exp: now.addingTimeInterval(60))),
+            lastRefresh: nil
+        )
+
+        XCTAssertTrue(store.needsRefresh(auth))
+    }
+
+    func testNoExpClaimFallsBackToStaleLastRefresh() {
+        // No decodable `exp` ⇒ fall back to the 8-day `last_refresh` rule; 9 days old ⇒ refresh.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = CodexAuthStore(now: { now })
+        let nineDaysAgo = OpenUsageISO8601.string(from: now.addingTimeInterval(-9 * 24 * 60 * 60))
+        let auth = CodexAuth(
+            tokens: CodexTokens(accessToken: "token"),
+            lastRefresh: nineDaysAgo
+        )
+
+        XCTAssertTrue(store.needsRefresh(auth))
+    }
+
+    func testNoExpClaimAndNoLastRefreshDoesNotForceRefresh() {
+        // A brand-new login (no readable `exp`, no `last_refresh`) must NOT be forced to refresh — the
+        // old code returned true here and refreshed immediately on first launch.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = CodexAuthStore(now: { now })
+        let auth = CodexAuth(tokens: CodexTokens(accessToken: "token"), lastRefresh: nil)
+
+        XCTAssertFalse(store.needsRefresh(auth))
+    }
+
+    /// Builds a real JWT-shaped token: `base64url(header).base64url({"exp":<epoch>}).sig`.
+    private func jwt(exp date: Date) -> String {
+        func b64url(_ string: String) -> String {
+            Data(string.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let header = b64url(#"{"alg":"RS256","typ":"JWT"}"#)
+        let payload = b64url(#"{"exp":\#(Int(date.timeIntervalSince1970))}"#)
+        return "\(header).\(payload).sig"
+    }
+
     func testUsesCodexHomeAuthPathBeforeDefaultPaths() {
         let files = FakeFiles([
             "/tmp/codex-home/auth.json": #"{"tokens":{"access_token":"token"}}"#
@@ -178,6 +242,99 @@ final class CodexUsageMapperTests: XCTestCase {
         XCTAssertEqual(progress(mapped.lines, "Weekly")?.used, 7)
     }
 
+    func testSurfacesSparkLinesFromAdditionalRateLimits() throws {
+        // The usage body carries model-specific limits in `additional_rate_limits`; the Spark entry's
+        // primary/secondary windows become the Spark (5-hour) and Spark Weekly meters. Regression for
+        // issue #796 — the Swift edition dropped these when it didn't port the JS plugin's parsing.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let nowSec = Int(now.timeIntervalSince1970)
+        let body = Data("""
+        {
+          "rate_limit": {
+            "primary_window": { "used_percent": 5, "reset_after_seconds": 60 },
+            "secondary_window": { "used_percent": 10, "reset_after_seconds": 120 }
+          },
+          "additional_rate_limits": [
+            {
+              "limit_name": "GPT-5.3-Codex-Spark",
+              "metered_feature": "codex_bengalfox",
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 25,
+                  "limit_window_seconds": 18000,
+                  "reset_after_seconds": 3600,
+                  "reset_at": \(nowSec + 3600)
+                },
+                "secondary_window": {
+                  "used_percent": 40,
+                  "limit_window_seconds": 604800,
+                  "reset_after_seconds": 86400,
+                  "reset_at": \(nowSec + 86400)
+                }
+              }
+            }
+          ]
+        }
+        """.utf8)
+        let response = HTTPResponse(statusCode: 200, headers: [:], body: body)
+
+        let mapped = try CodexUsageMapper.mapUsageResponse(response, now: now)
+
+        XCTAssertEqual(progress(mapped.lines, "Spark")?.used, 25)
+        XCTAssertEqual(progress(mapped.lines, "Spark")?.periodDurationMs, 18_000_000)
+        XCTAssertEqual(progress(mapped.lines, "Spark")?.resetsAt,
+                       Date(timeIntervalSince1970: TimeInterval(nowSec + 3600)))
+        XCTAssertEqual(progress(mapped.lines, "Spark Weekly")?.used, 40)
+        XCTAssertEqual(progress(mapped.lines, "Spark Weekly")?.periodDurationMs, 604_800_000)
+        // The core Session/Weekly windows are unaffected by the new parsing.
+        XCTAssertEqual(progress(mapped.lines, "Session")?.used, 5)
+        XCTAssertEqual(progress(mapped.lines, "Weekly")?.used, 10)
+    }
+
+    func testMatchesSparkByMeteredFeatureWhenLimitNameLacksSpark() throws {
+        // `limit_name` wording can shift; matching `metered_feature` too keeps the row resolving.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let body = Data("""
+        {
+          "additional_rate_limits": [
+            {
+              "limit_name": "Research Preview",
+              "metered_feature": "codex_spark_preview",
+              "rate_limit": { "primary_window": { "used_percent": 12, "reset_after_seconds": 60 } }
+            }
+          ]
+        }
+        """.utf8)
+        let response = HTTPResponse(statusCode: 200, headers: [:], body: body)
+
+        let mapped = try CodexUsageMapper.mapUsageResponse(response, now: now)
+
+        XCTAssertEqual(progress(mapped.lines, "Spark")?.used, 12)
+    }
+
+    func testIgnoresNonSparkAndMalformedAdditionalRateLimits() throws {
+        // Non-Spark model limits have no descriptors, so they aren't surfaced; a null/non-dictionary
+        // element is skipped without discarding its siblings; a Spark entry missing `rate_limit` yields
+        // no lines. None of this should ever throw.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let body = Data("""
+        {
+          "additional_rate_limits": [
+            null,
+            { "limit_name": "Some Other Model", "rate_limit": { "primary_window": { "used_percent": 50, "reset_after_seconds": 60 } } },
+            { "limit_name": "GPT-5.3-Codex-Spark" }
+          ]
+        }
+        """.utf8)
+        let response = HTTPResponse(statusCode: 200, headers: [:], body: body)
+
+        let mapped = try CodexUsageMapper.mapUsageResponse(response, now: now)
+
+        XCTAssertNil(progress(mapped.lines, "Spark"))
+        XCTAssertNil(progress(mapped.lines, "Spark Weekly"))
+        XCTAssertNil(progress(mapped.lines, "Some Other Model"))
+    }
+
     func testAppendsTokenUsageLines() {
         var lines: [MetricLine] = []
         let usage = DailyUsageSeries(daily: [
@@ -194,19 +351,18 @@ final class CodexUsageMapperTests: XCTestCase {
         XCTAssertEqual(values(lines, "Today"),
                        [MetricValue(number: 0.75, kind: .dollars, estimated: true),
                         MetricValue(number: 150, kind: .count, label: "tokens")])
-        // No usage yesterday is a real, measured zero → "$0.00 · 0 tokens", not "0" and not "No data".
-        XCTAssertEqual(values(lines, "Yesterday"),
-                       [MetricValue(number: 0, kind: .dollars, estimated: true),
-                        MetricValue(number: 0, kind: .count, label: "tokens")])
+        // No usage yesterday → "No data" (no backing line), not a fabricated "$0.00 · 0 tokens".
+        XCTAssertNil(values(lines, "Yesterday"))
         XCTAssertEqual(values(lines, "Last 30 Days"),
                        [MetricValue(number: 1.75, kind: .dollars, estimated: true),
                         MetricValue(number: 450, kind: .count, label: "tokens")])
     }
 
-    func testZeroUsageReadsZeroDollarsAndTokensNotNoData() {
-        // The reported Grok "Today 0": a period with no usage is a measured zero, so every tile reads
-        // "$0.00 · 0 tokens" — never a bare "0", and never "No data" (that's only for an unreadable
-        // source). Fixed once in SpendTileMapper, so it holds for every provider that funnels through it.
+    func testZeroUsageLeavesTilesUnbacked() {
+        // A period with no usage is "No data" — no tile is appended, never a fabricated "$0.00 · 0 tokens".
+        // Fixed once in SpendTileMapper, so it holds for every provider that funnels through it. Here the
+        // only reported day is a zero-token Yesterday; Today is absent, Yesterday is idle, and the 30-day
+        // total is zero, so nothing is appended.
         var lines: [MetricLine] = []
         SpendTileMapper.appendTokenUsage(
             DailyUsageSeries(daily: [DailyUsageEntry(date: "2026-02-19", totalTokens: 0, costUSD: nil)]),
@@ -214,11 +370,7 @@ final class CodexUsageMapperTests: XCTestCase {
             now: makeDate("2026-02-20T16:00:00.000Z")
         )
 
-        let zero = [MetricValue(number: 0, kind: .dollars, estimated: true),
-                    MetricValue(number: 0, kind: .count, label: "tokens")]
-        XCTAssertEqual(values(lines, "Today"), zero)
-        XCTAssertEqual(values(lines, "Yesterday"), zero)
-        XCTAssertEqual(values(lines, "Last 30 Days"), zero)
+        XCTAssertTrue(lines.isEmpty, "an all-zero window appends no spend tiles")
     }
 
     func testUnpricedTokensShowTokensWithoutAFabricatedZeroDollar() {
@@ -306,7 +458,7 @@ final class CodexUsageMapperTests: XCTestCase {
             now: OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
         )
 
-        guard case .values(_, let vals, _, let expiriesAt) = mapped.lines.first(where: { $0.label == "Rate Limit Resets" }) else {
+        guard case .values(_, let vals, _, let expiriesAt, _) = mapped.lines.first(where: { $0.label == "Rate Limit Resets" }) else {
             return XCTFail("expected a Rate Limit Resets values line")
         }
         XCTAssertEqual(vals, [MetricValue(number: 2, kind: .count, label: "available")])
@@ -339,7 +491,7 @@ final class CodexUsageMapperTests: XCTestCase {
             now: OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
         )
 
-        guard case .values(_, _, _, let expiriesAt) = mapped.lines.first(where: { $0.label == "Rate Limit Resets" }) else {
+        guard case .values(_, _, _, let expiriesAt, _) = mapped.lines.first(where: { $0.label == "Rate Limit Resets" }) else {
             return XCTFail("expected a Rate Limit Resets values line")
         }
         // The two status-less credits are kept (sorted); the "consumed" one is dropped.
@@ -361,7 +513,7 @@ final class CodexUsageMapperTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_800_000_000)
         )
 
-        guard case .values(_, let vals, _, let expiriesAt) = mapped.lines.first(where: { $0.label == "Rate Limit Resets" }) else {
+        guard case .values(_, let vals, _, let expiriesAt, _) = mapped.lines.first(where: { $0.label == "Rate Limit Resets" }) else {
             return XCTFail("expected a Rate Limit Resets values line")
         }
         XCTAssertEqual(vals, [MetricValue(number: 3, kind: .count, label: "available")])
@@ -424,7 +576,7 @@ final class CodexUsageMapperTests: XCTestCase {
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
-        guard case .values(_, let values, _, _) = lines.first(where: { $0.label == label }) else {
+        guard case .values(_, let values, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return values
@@ -470,7 +622,7 @@ final class CodexProviderTests: XCTestCase {
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
-        guard case .values(_, let values, _, _) = lines.first(where: { $0.label == label }) else {
+        guard case .values(_, let values, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return values

@@ -12,6 +12,39 @@ final class ClaudeAuthStoreTests: XCTestCase {
         XCTAssertEqual(credentials?.claudeAiOauth?.subscriptionType, "pro")
     }
 
+    func testCredentialDiagnosticsLabelIsTokenFreeWithSourceRefreshAndExpiredFlags() {
+        // The info-level "refresh start" / fallback diagnostics must name the source kind and whether each
+        // candidate carries a refresh token + is already expired — never any token value (#738 diagnosis).
+        let now = Date(timeIntervalSince1970: 1_000_000) // 1_000_000_000 ms
+
+        let fresh = ClaudeCredentialState(
+            oauth: ClaudeOAuth(accessToken: "ACCESS_SECRET", refreshToken: "REFRESH_SECRET", expiresAt: 2_000_000_000_000),
+            source: .keychainCurrentUser(service: "Claude Code-credentials"),
+            fullData: nil,
+            inferenceOnly: false
+        )
+        XCTAssertEqual(fresh.diagnosticsLabel(now: now), "keychainCurrentUser refresh=yes expired=no")
+        XCTAssertFalse(fresh.diagnosticsLabel(now: now).contains("SECRET")) // never leaks token values
+
+        // No refresh token + an already-expired access token: the #738 shape that can never self-heal.
+        let lockedOut = ClaudeCredentialState(
+            oauth: ClaudeOAuth(accessToken: "a", refreshToken: nil, expiresAt: 1),
+            source: .file,
+            fullData: nil,
+            inferenceOnly: false
+        )
+        XCTAssertEqual(lockedOut.diagnosticsLabel(now: now), "file refresh=no expired=yes")
+
+        // Empty refresh token counts as absent; missing expiry is reported as unknown, not assumed fresh.
+        let unknownExpiry = ClaudeCredentialState(
+            oauth: ClaudeOAuth(accessToken: "a", refreshToken: "", expiresAt: nil),
+            source: .keychainLegacy(service: "svc"),
+            fullData: nil,
+            inferenceOnly: false
+        )
+        XCTAssertEqual(unknownExpiry.diagnosticsLabel(now: now), "keychainLegacy refresh=no expired=unknown")
+    }
+
     func testPrefersCurrentUserKeychainCredentialsBeforeFile() {
         let files = FakeFiles([
             "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"file-token","subscriptionType":"pro"}}"#
@@ -32,10 +65,11 @@ final class ClaudeAuthStoreTests: XCTestCase {
         XCTAssertEqual(credentials?.oauth.subscriptionType, "max")
     }
 
-    func testPrefersFresherFileTokenOverStaleKeychain() {
-        // #687: keychain is the historical default source, but when the file holds a token with a later
-        // expiry (a more recent external `claude` login), it must be tried first so a stale keychain
-        // entry can no longer shadow the fresh login. Ordering still keeps both candidates available.
+    func testPrefersKeychainOverFileEvenWhenFileTokenExpiresLater() {
+        // #738 regression: the keychain is Claude Code's live source of truth, so it must win even when a
+        // stale `~/.claude/.credentials.json` carries a *later* expiry. Ranking purely by expiry (the old
+        // #694 behavior) let that stale file outrank the live keychain and starved token refresh. Both
+        // candidates stay available so the refresh loop can still fall back keychain → file on auth expiry.
         let files = FakeFiles([
             "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"file-token","expiresAt":4102444800000,"subscriptionType":"pro"}}"#
         ])
@@ -50,8 +84,8 @@ final class ClaudeAuthStoreTests: XCTestCase {
 
         let candidates = store.loadCredentialCandidates()
 
-        XCTAssertEqual(candidates.map(\.oauth.accessToken), ["file-token", "keychain-token"])
-        XCTAssertEqual(store.loadCredentials()?.oauth.accessToken, "file-token")
+        XCTAssertEqual(candidates.map(\.oauth.accessToken), ["keychain-token", "file-token"])
+        XCTAssertEqual(store.loadCredentials()?.oauth.accessToken, "keychain-token")
     }
 
     func testEnvironmentTokenIsInferenceOnly() {
@@ -65,6 +99,29 @@ final class ClaudeAuthStoreTests: XCTestCase {
 
         XCTAssertEqual(credentials?.oauth.accessToken, "env-token")
         XCTAssertFalse(store.canFetchLiveUsage(credentials!))
+        XCTAssertEqual(store.liveUsageAvailability(credentials!), .inferenceOnlyToken)
+    }
+
+    func testLiveUsageAvailabilityReflectsProfileScope() {
+        let store = ClaudeAuthStore(environment: FakeEnvironment(), files: FakeFiles(), keychain: FakeKeychain())
+        func state(_ scopes: [String]?, inferenceOnly: Bool = false) -> ClaudeCredentialState {
+            ClaudeCredentialState(
+                oauth: ClaudeOAuth(accessToken: "token", scopes: scopes),
+                source: .keychainCurrentUser(service: "Claude Code-credentials"),
+                fullData: nil,
+                inferenceOnly: inferenceOnly
+            )
+        }
+
+        // Older credentials predate the scopes field; an absent/empty list is "unknown, allow".
+        XCTAssertEqual(store.liveUsageAvailability(state(nil)), .available)
+        XCTAssertEqual(store.liveUsageAvailability(state([])), .available)
+        XCTAssertEqual(store.liveUsageAvailability(state(["user:inference", "user:profile"])), .available)
+        // An inference-only token (e.g. from `claude setup-token`) lacks user:profile → can't read usage.
+        XCTAssertEqual(store.liveUsageAvailability(state(["user:inference"])), .missingProfileScope)
+        XCTAssertFalse(store.canFetchLiveUsage(state(["user:inference"])))
+        // An explicit env token is inference-only by design: silent, not a missing-scope notice.
+        XCTAssertEqual(store.liveUsageAvailability(state(["user:inference"], inferenceOnly: true)), .inferenceOnlyToken)
     }
 
     func testMalformedCustomOAuthURLThrowsInsteadOfCrashing() {
@@ -130,7 +187,7 @@ final class ClaudeUsageMapperTests: XCTestCase {
             credentials: ClaudeOAuth(subscriptionType: "max")
         )
 
-        guard case .values(_, let values, _, _)? = mapped.lines.first(where: { $0.label == "Extra usage spent" }) else {
+        guard case .values(_, let values, _, _, _)? = mapped.lines.first(where: { $0.label == "Extra usage spent" }) else {
             return XCTFail("Expected an Extra usage spent .values line")
         }
         XCTAssertEqual(values.count, 1)
@@ -243,6 +300,49 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertTrue(httpClient.requests.contains { $0.url.absoluteString == "https://api.anthropic.com/api/oauth/usage" })
     }
 
+    func testInferenceOnlyScopeSurfacesReloginWarningAndSkipsUsageCallButKeepsSpendTiles() async {
+        // A credential that authenticates for inference but lacks the `user:profile` scope (e.g. a
+        // `claude setup-token` token) can't read the usage endpoint. The provider must NOT silently leave
+        // Session/Weekly blank: it surfaces a soft provider warning (the header's amber triangle, like
+        // Z.ai's "no coding plan" notice) telling the user to re-login, skips the usage HTTP call, and
+        // still loads the local ccusage spend tiles.
+        let now = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let httpClient = FakeHTTPClient(response: HTTPResponse(
+            statusCode: 200,
+            headers: [:],
+            body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+        ))
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+                files: FakeFiles([
+                    "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"max","rateLimitTier":"default_claude_max_5x","scopes":["user:inference"]}}"#
+                ]),
+                keychain: FakeKeychain(),
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(
+                processRunner: FakeProcessRunner(),
+                homeDirectory: { URL(fileURLWithPath: "/Users/test") }
+            ),
+            now: { now }
+        )
+
+        let snapshot = await provider.refresh()
+
+        // A soft provider warning explains the missing scope — not a hard error badge, and the live-usage
+        // meters stay blank (no "Session" line) rather than silently loading nothing.
+        XCTAssertEqual(snapshot.warning, ClaudeUsageMapper.missingProfileScopeWarning)
+        XCTAssertNil(badge(snapshot.lines, "Error"))
+        XCTAssertNil(snapshot.line(label: "Session"))
+        // The usage endpoint was never called — that's the whole point of the scope gate.
+        XCTAssertFalse(httpClient.requests.contains { $0.url.absoluteString.hasSuffix("/api/oauth/usage") })
+        // Local spend tiles are unaffected and still load.
+        XCTAssertNotNil(values(snapshot.lines, "Today"))
+        XCTAssertEqual(snapshot.plan, "Max 5x")
+    }
+
     func testLiveClaudeUsageReportsResetFields() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["OPENUSAGE_LIVE_CLAUDE"] == "1")
 
@@ -339,9 +439,9 @@ final class ClaudeProviderTests: XCTestCase {
             keychain: keychain,
             now: { now }
         )
-        // The stale keychain token even has a *later* expiry than the file token, so freshest-first
-        // ordering still probes it first — proving the recovery comes from the auth-failure fallback,
-        // not just from reordering.
+        // The keychain is always probed first (it's the source of truth), so this exercises the
+        // auth-failure fallback: the stale keychain token's refresh is revoked, and recovery comes from
+        // falling through to the fresh file token — not from any expiry-based reordering.
         let hashedService = authStore.keychainServiceCandidates().first!
         keychain.currentUserValues[hashedService] = #"{"claudeAiOauth":{"accessToken":"stale-access","refreshToken":"stale-refresh","expiresAt":4102444800000,"subscriptionType":"max","scopes":["user:profile"]}}"#
 
@@ -448,6 +548,60 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(badge(snapshot.lines, "Status")?.hasPrefix("Rate limited"), true)
     }
 
+    func testRateLimitServesLastGoodUsageThenBacksOff() async {
+        // Tier 2: once a live fetch succeeds, a subsequent 429 keeps showing the cached bars (with a
+        // staleness note) instead of a bare badge, and the cooldown then skips the live call entirely so
+        // a constantly-limited endpoint isn't hammered. Mirrors the legacy plugin's cache + 429 backoff.
+        let t0 = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let clock = TestClock(t0)
+        let usageCalls = CallCounter()
+        let httpClient = RoutingHTTPClient { request in
+            guard request.url.absoluteString.hasSuffix("/api/oauth/usage") else {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data())
+            }
+            if usageCalls.next() == 1 {
+                return HTTPResponse(
+                    statusCode: 200,
+                    headers: [:],
+                    body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+                )
+            }
+            return HTTPResponse(statusCode: 429, headers: ["retry-after": "600"], body: Data())
+        }
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+                files: FakeFiles([
+                    "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"pro","scopes":["user:profile"]}}"#
+                ]),
+                keychain: FakeKeychain(),
+                now: { clock.now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(
+                processRunner: FakeProcessRunner(),
+                homeDirectory: { URL(fileURLWithPath: "/Users/test") }
+            ),
+            now: { clock.now }
+        )
+
+        // 1) Live fetch succeeds and is cached.
+        let first = await provider.refresh()
+        XCTAssertEqual(Self.progress(first.lines, "Session")?.used, 25)
+
+        // 2) 429: still shows the cached Session bar plus the staleness note, not a bare "Status" badge.
+        let second = await provider.refresh()
+        XCTAssertEqual(Self.progress(second.lines, "Session")?.used, 25)
+        XCTAssertEqual(text(second.lines, "Note")?.contains("rate limited"), true)
+        XCTAssertNil(badge(second.lines, "Status"))
+
+        // 3) Within the cooldown the live call is skipped entirely; the cached bar is still shown.
+        clock.set(t0.addingTimeInterval(60))
+        let third = await provider.refresh()
+        XCTAssertEqual(Self.progress(third.lines, "Session")?.used, 25)
+        XCTAssertEqual(httpClient.requests.filter { $0.url.absoluteString.hasSuffix("/api/oauth/usage") }.count, 2)
+    }
+
     func testRefreshSurfacesRequestFailureForNonOAuthRefreshErrorBody() async {
         // The usage call 401s (forcing a refresh); the refresh endpoint then returns a non-OAuth 400
         // (an HTML proxy/WAF page). The snapshot must report a request failure, NOT "token expired" —
@@ -491,10 +645,17 @@ final class ClaudeProviderTests: XCTestCase {
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
-        guard case .values(_, let values, _, _) = lines.first(where: { $0.label == label }) else {
+        guard case .values(_, let values, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return values
+    }
+
+    private func text(_ lines: [MetricLine], _ label: String) -> String? {
+        guard case .text(_, let value, _, _) = lines.first(where: { $0.label == label }) else {
+            return nil
+        }
+        return value
     }
 
     private static func progress(_ lines: [MetricLine], _ label: String) -> (used: Double, limit: Double, resetsAt: Date?, periodDurationMs: Int?)? {
@@ -502,5 +663,31 @@ final class ClaudeProviderTests: XCTestCase {
             return nil
         }
         return (used, limit, resetsAt, periodDurationMs)
+    }
+}
+
+/// A monotonic call counter for stateful `RoutingHTTPClient` handlers (e.g. "succeed once, then 429").
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        value += 1
+        return value
+    }
+}
+
+/// A mutable clock so a test can advance `now` between refreshes to exercise time-based gates.
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ value: Date) { self.value = value }
+    var now: Date {
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+    func set(_ value: Date) {
+        lock.lock(); defer { lock.unlock() }
+        self.value = value
     }
 }

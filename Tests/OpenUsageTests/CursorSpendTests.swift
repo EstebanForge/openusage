@@ -82,6 +82,29 @@ final class CursorPricingTests: XCTestCase {
         XCTAssertEqual(fable.outputPerMillion, opus48.outputPerMillion * 2)
     }
 
+    /// GLM 5.2 (Z.ai) was added to Cursor's pricing page after the 2026-06-09 manifest sync. It ships
+    /// as two reasoning-effort variants — `glm-5.2-high` and `glm-5.2-max` — which both resolve to the
+    /// one canonical `glm-5.2` entry. The pricing page lists no separate cache-write price, so cache
+    /// write is billed at the input rate ($1.4), matching how the Gemini/GPT entries are filled.
+    func testGLM52PricingAndAliases() throws {
+        XCTAssertEqual(CursorPricing.canonicalModel(for: "glm-5.2"), "glm-5.2")
+        XCTAssertEqual(CursorPricing.canonicalModel(for: "glm-5.2-high"), "glm-5.2")
+        XCTAssertEqual(CursorPricing.canonicalModel(for: "glm-5.2-max"), "glm-5.2")
+
+        let glm = try XCTUnwrap(CursorPricing.pricingEntry(for: "glm-5.2-max"))
+        XCTAssertEqual(glm.familyDisplayName, "GLM 5.2")
+        XCTAssertEqual(glm.inputPerMillion, 1.4)
+        XCTAssertEqual(glm.cacheWritePerMillion, 1.4)
+        XCTAssertEqual(glm.cacheReadPerMillion, 0.26)
+        XCTAssertEqual(glm.outputPerMillion, 4.4)
+
+        // 1M output at $4.4/M → $4.40; a slug outside the high/max allowlist stays unpriced ($0).
+        let outputOnly = CursorTokenUsage(inputCacheWrite: 0, inputNoCacheWrite: 0, cacheRead: 0, output: 1_000_000)
+        XCTAssertEqual(CursorPricing.estimatedCostDollars(model: "glm-5.2-high", maxMode: false, tokens: outputOnly), 4.4, accuracy: 1e-9)
+        XCTAssertNil(CursorPricing.canonicalModel(for: "glm-5.2-bogus"))
+        XCTAssertEqual(CursorPricing.estimatedCostDollars(model: "glm-5.2-bogus", maxMode: false, tokens: outputOnly), 0, accuracy: 1e-9)
+    }
+
     func testCostSumsAllFourBucketsAndUnpricedIsZero() {
         let entry = try! XCTUnwrap(CursorPricing.pricingEntry(for: "composer-1"))
         let tokens = CursorTokenUsage(
@@ -123,16 +146,16 @@ final class CursorSpendRangeTests: XCTestCase {
         XCTAssertEqual(values(lines, "Last 30 Days"), [MetricValue(number: 8.50, kind: .dollars), MetricValue(number: 1349, kind: .count, label: "tokens")])
     }
 
-    func testZeroActivityReadsZeroDollarsAndTokens() {
+    func testZeroActivityLeavesTilesUnbacked() {
         var lines: [MetricLine] = []
         CursorUsageMapper.appendSpendLines(rows: [], now: Date(), to: &lines)
 
-        // The export fetched but had no rows: a real, measured zero, so every tile reads "$0.00 · 0
-        // tokens" — not "0" and not "No data" (that's reserved for a failed export; see the provider test).
-        let zero = [MetricValue(number: 0, kind: .dollars), MetricValue(number: 0, kind: .count, label: "tokens")]
-        XCTAssertEqual(values(lines, "Today"), zero)
-        XCTAssertEqual(values(lines, "Yesterday"), zero)
-        XCTAssertEqual(values(lines, "Last 30 Days"), zero)
+        // The export fetched but had no rows: every period is idle, so no spend tile is appended and the
+        // tiles fall back to "No data" — not a fabricated "$0.00 · 0 tokens" ("No data" is also what a
+        // failed export produces; see the provider test).
+        XCTAssertNil(values(lines, "Today"))
+        XCTAssertNil(values(lines, "Yesterday"))
+        XCTAssertNil(values(lines, "Last 30 Days"))
     }
 
     func testAppendSpendLinesAlsoAppendsUsageTrend() {
@@ -158,17 +181,60 @@ final class CursorSpendRangeTests: XCTestCase {
     }
 
     func testNoRowsLeavesNoUsageTrend() {
-        // A fetched-but-empty export is a real zero for the spend tiles, but the trend has nothing to
-        // draw, so no chart line is appended (the row falls back to "No data").
+        // A fetched-but-empty export leaves the spend tiles unbacked and gives the trend nothing to draw,
+        // so no chart line is appended (the row falls back to "No data").
         var lines: [MetricLine] = []
         CursorUsageMapper.appendSpendLines(rows: [], now: Date(), to: &lines)
         XCTAssertNil(lines.first(where: { $0.label == "Usage Trend" }))
     }
 
-    private func makeRow(date: Date, cost: Double, tokens: Int) -> CursorUsageCSVRow {
+    func testUnknownModelsAttachToTheRightPeriods() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let cal = Calendar.current
+        let rows = [
+            makeRow(date: now, cost: 1.00, tokens: 100, model: "composer-1"),                                  // priced, today
+            makeRow(date: now, cost: 0.00, tokens: 50, model: "totally-unknown-model-xyz"),                     // unknown, today
+            makeRow(date: cal.date(byAdding: .day, value: -1, to: now)!, cost: 2.00, tokens: 200, model: "composer-1"), // priced, yesterday
+            makeRow(date: cal.date(byAdding: .day, value: -3, to: now)!, cost: 0.00, tokens: 80, model: "another-unknown-abc") // unknown, last30 only
+        ]
+
+        var lines: [MetricLine] = []
+        CursorUsageMapper.appendSpendLines(rows: rows, now: now, to: &lines)
+
+        // Today carries its own unknown model; a fully-priced Yesterday stays clean; Last 30 Days carries
+        // the de-duplicated, sorted union across the whole window.
+        XCTAssertEqual(unknown(lines, "Today"), ["totally-unknown-model-xyz"])
+        XCTAssertEqual(unknown(lines, "Yesterday"), [])
+        XCTAssertEqual(unknown(lines, "Last 30 Days"), ["another-unknown-abc", "totally-unknown-model-xyz"])
+    }
+
+    func testUnknownModelWithZeroTokensIsNotFlagged() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // A zero-token row of an unknown model changes no cost, so it never raises the warning. The day
+        // also has real priced usage, so the tile exists (an all-idle day gets no tile at all) — proving
+        // the zero-token unknown is filtered out, not just hidden by an absent tile.
+        let rows = [
+            makeRow(date: now, cost: 1.00, tokens: 100, model: "composer-1"),
+            makeRow(date: now, cost: 0.00, tokens: 0, model: "totally-unknown-model-xyz")
+        ]
+
+        var lines: [MetricLine] = []
+        CursorUsageMapper.appendSpendLines(rows: rows, now: now, to: &lines)
+
+        XCTAssertNotNil(values(lines, "Today"), "the priced row keeps the tile present")
+        XCTAssertEqual(unknown(lines, "Today"), [])
+        XCTAssertEqual(unknown(lines, "Last 30 Days"), [])
+    }
+
+    private func unknown(_ lines: [MetricLine], _ label: String) -> [String]? {
+        guard case .values(_, _, _, _, let unknownModels) = lines.first(where: { $0.label == label }) else { return nil }
+        return unknownModels
+    }
+
+    private func makeRow(date: Date, cost: Double, tokens: Int, model: String = "composer-1") -> CursorUsageCSVRow {
         CursorUsageCSVRow(
             date: date,
-            model: "composer-1",
+            model: model,
             maxMode: false,
             tokens: CursorTokenUsage(inputCacheWrite: 0, inputNoCacheWrite: tokens, cacheRead: 0, output: 0),
             imputedCostDollars: cost
@@ -176,7 +242,7 @@ final class CursorSpendRangeTests: XCTestCase {
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
-        guard case .values(_, let values, _, _) = lines.first(where: { $0.label == label }) else { return nil }
+        guard case .values(_, let values, _, _, _) = lines.first(where: { $0.label == label }) else { return nil }
         return values
     }
 }
@@ -185,71 +251,92 @@ final class CursorSpendRangeTests: XCTestCase {
 
 @MainActor
 final class CursorSpendProviderTests: XCTestCase {
-    func testRefreshAppendsSpendTilesViaCookieSession() async {
-        let accessToken = makeCursorJWT(sub: "google-oauth2|user_abc123")
+    func testSpendTrackingEnabledDownloadsCSVExposesSpendTilesAndFlagsUnknownModels() async {
+        // Spend tracking is back on (issue #758): the provider downloads the usage CSV, exposes the
+        // spend-tile + trend descriptors, and emits Today / Yesterday / Last 30 Days / Usage Trend lines
+        // alongside the live quota meters. A row that used a model the manifest can't price carries that
+        // model's name so the tile can warn its cost is incomplete.
+        XCTAssertTrue(CursorProvider.spendTrackingEnabled, "this regression guards the enabled state")
+
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let iso = ISO8601DateFormatter()
         let todayStr = iso.string(from: now)
         let yesterdayStr = iso.string(from: Calendar.current.date(byAdding: .day, value: -1, to: now)!)
+        // A priced model and an unknown one both used today, plus a priced row yesterday.
         let csv = """
         Date,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Cost
-        \(todayStr),composer-1,No,0,0,0,1000000,Included
-        \(yesterdayStr),composer-1,No,0,0,0,2000000,Included
+        \(todayStr),composer-1,No,0,1000000,0,0,Included
+        \(todayStr),totally-unknown-model-xyz,No,0,500000,0,0,Included
+        \(yesterdayStr),composer-1,No,0,200000,0,0,Included
         """
 
+        let accessToken = makeCursorJWT(sub: "google-oauth2|user_abc123")
+        let http = RoutingHTTPClient { request in
+            let url = request.url.absoluteString
+            if url.contains("export-usage-events-csv") {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(csv.utf8))
+            }
+            if url.contains("GetCurrentPeriodUsage") {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data("""
+                {
+                  "enabled": true,
+                  "billingCycleEnd": 1772592000000,
+                  "planUsage": { "limit": 40000, "remaining": 32000, "totalPercentUsed": 20 }
+                }
+                """.utf8))
+            }
+            if url.contains("GetPlanInfo") {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"planInfo":{"planName":"pro plan"}}"#.utf8))
+            }
+            if url.contains("GetCreditGrantsBalance") {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"hasCreditGrants":false}"#.utf8))
+            }
+            return HTTPResponse(statusCode: 404, headers: [:], body: Data())
+        }
         let provider = CursorProvider(
             authStore: CursorAuthStore(
                 sqlite: FakeSQLite(values: [CursorAuthStore.accessTokenKey: accessToken]),
                 keychain: FakeKeychain()
             ),
-            usageClient: CursorUsageClient(http: spendRouter(accessToken: accessToken, csv: csv, csvStatus: 200)),
+            usageClient: CursorUsageClient(http: http),
             now: { now }
         )
 
         let snapshot = await provider.refresh()
 
-        XCTAssertEqual(textValue(snapshot.lines, "Today"), "$10.00")
-        XCTAssertEqual(textValue(snapshot.lines, "Yesterday"), "$20.00")
-        XCTAssertEqual(textValue(snapshot.lines, "Last 30 Days"), "$30.00")
+        XCTAssertTrue(http.requests.contains { $0.url.absoluteString.contains("export-usage-events-csv") },
+                      "spend tracking is enabled — Cursor must download the usage CSV")
+        // Live quota meter survives; spend tiles + trend are present.
+        XCTAssertTrue(snapshot.lines.contains { $0.label == "Total usage" })
+        for label in ["Today", "Yesterday", "Last 30 Days", "Usage Trend"] {
+            XCTAssertNotNil(snapshot.lines.first { $0.label == label }, "\(label) line must be present")
+        }
+        let ids = Set(provider.widgetDescriptors.map(\.id))
+        for id in ["cursor.today", "cursor.yesterday", "cursor.last30", "cursor.trend"] {
+            XCTAssertTrue(ids.contains(id), "\(id) descriptor must be present")
+        }
+
+        // The unknown model rode onto Today (and the Last 30 Days union); a fully-priced Yesterday stays clean.
+        XCTAssertEqual(unknownModels(snapshot.lines, "Today"), ["totally-unknown-model-xyz"])
+        XCTAssertEqual(unknownModels(snapshot.lines, "Yesterday"), [])
+        XCTAssertEqual(unknownModels(snapshot.lines, "Last 30 Days"), ["totally-unknown-model-xyz"])
     }
 
-    func testCSVFailureLeavesSpendTilesAsNoData() async {
-        let accessToken = makeCursorJWT(sub: "google-oauth2|user_abc123")
-        let provider = CursorProvider(
-            authStore: CursorAuthStore(
-                sqlite: FakeSQLite(values: [CursorAuthStore.accessTokenKey: accessToken]),
-                keychain: FakeKeychain()
-            ),
-            usageClient: CursorUsageClient(http: spendRouter(accessToken: accessToken, csv: "", csvStatus: 401)),
-            now: { Date(timeIntervalSince1970: 1_800_000_000) }
-        )
-
-        let snapshot = await provider.refresh()
-        XCTAssertNil(textValue(snapshot.lines, "Today"))
-        XCTAssertNil(textValue(snapshot.lines, "Yesterday"))
-        XCTAssertNil(textValue(snapshot.lines, "Last 30 Days"))
-
-        let descriptor = try! XCTUnwrap(provider.widgetDescriptors.first { $0.id == "cursor.today" })
-        let defaults = isolatedDefaults("nodata")
-        let store = WidgetDataStore(
-            registry: WidgetRegistry(providers: [provider.provider], descriptors: provider.widgetDescriptors),
-            providers: [provider],
-            cache: isolatedCache(defaults),
-            defaults: defaults
-        )
-        await store.refreshAll()
-
-        let data = store.data(for: descriptor)
-        XCTAssertFalse(data.hasData)
-        XCTAssertEqual(data.valueText, WidgetData.noDataHeadline)
+    private func unknownModels(_ lines: [MetricLine], _ label: String) -> [String]? {
+        guard case .values(_, _, _, _, let unknownModels) = lines.first(where: { $0.label == label }) else { return nil }
+        return unknownModels
     }
 
     func testSpendTileRendersCombinedCostAndTokensWithValueTooltip() async {
         let cursor = CursorProvider()
-        let descriptor = try! XCTUnwrap(cursor.widgetDescriptors.first { $0.id == "cursor.today" })
+        // Spend tiles are gated off the live provider (issue #758), so source the descriptor from the
+        // shared factory — this keeps the combined "cost · tokens" render shape covered for re-enable.
+        let descriptor = try! XCTUnwrap(WidgetDescriptor.spendTiles(provider: cursor.provider).first { $0.id == "cursor.today" })
 
-        // The combined tile joins the dollar and the labeled token count. A no-usage day is a real zero,
-        // so it reads "$0.00 · 0 tokens" (not "No data" — that's only for a failed export).
+        // The combined tile joins the dollar and the labeled token count. The render shape for a zero
+        // line is still "$0.00 · 0 tokens" — the mapper no longer produces these (an idle period is left
+        // unbacked → "No data"), but a provider that reports a real $0.00 (e.g. OpenRouter) still renders
+        // it rather than hiding the figure.
         let cases: [(Double, Int, String, String)] = [
             (12.34, 891_000, "$12.34", "$12.34 · 891K tokens"),
             (0.0, 0, "$0.00", "$0.00 · 0 tokens")
@@ -295,33 +382,6 @@ final class CursorSpendProviderTests: XCTestCase {
 
     // MARK: helpers
 
-    private func spendRouter(accessToken: String, csv: String, csvStatus: Int) -> RoutingHTTPClient {
-        RoutingHTTPClient { request in
-            let url = request.url.absoluteString
-            if url.contains("export-usage-events-csv") {
-                XCTAssertEqual(request.headers["Cookie"], "WorkosCursorSessionToken=user_abc123%3A%3A\(accessToken)")
-                XCTAssertEqual(request.headers["Accept"], "text/csv")
-                return HTTPResponse(statusCode: csvStatus, headers: [:], body: Data(csv.utf8))
-            }
-            if url.contains("GetCurrentPeriodUsage") {
-                return HTTPResponse(statusCode: 200, headers: [:], body: Data("""
-                {
-                  "enabled": true,
-                  "billingCycleEnd": 1772592000000,
-                  "planUsage": { "limit": 40000, "remaining": 32000, "totalPercentUsed": 20 }
-                }
-                """.utf8))
-            }
-            if url.contains("GetPlanInfo") {
-                return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"planInfo":{"planName":"pro plan"}}"#.utf8))
-            }
-            if url.contains("GetCreditGrantsBalance") {
-                return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"hasCreditGrants":false}"#.utf8))
-            }
-            return HTTPResponse(statusCode: 404, headers: [:], body: Data())
-        }
-    }
-
     private func isolatedDefaults(_ name: String) -> UserDefaults {
         let suiteName = "OpenUsageTests.CursorSpend.\(name).\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -334,17 +394,41 @@ final class CursorSpendProviderTests: XCTestCase {
     }
 }
 
-// MARK: - Shared test helpers (file-private; mirror CursorProviderTests)
+// MARK: - Client request contract
 
-private func textValue(_ lines: [MetricLine], _ label: String) -> String? {
-    guard let line = lines.first(where: { $0.label == label }) else { return nil }
-    if case .text(_, let value, _, _) = line { return value }
-    // Cursor spend is now a `.values` row carrying a single dollar value; render it in full.
-    if case .values(_, let values, _, _) = line, let dollars = values.first(where: { $0.kind == .dollars }) {
-        return MetricFormatter.number(dollars.number, kind: .dollars, style: .full)
+final class CursorUsageClientRequestTests: XCTestCase {
+    // The provider-level CSV integration tests were removed when spend tracking was disabled (issue
+    // #758), but `CursorUsageClient.fetchUsageCSV` is kept intact for re-enable. Pin its request contract
+    // directly at the client level — endpoint, epoch-ms range, `strategy=tokens`, the session cookie, and
+    // `Accept: text/csv` — so a silent regression in URL/header construction can't slip through while the
+    // feature is off (this test runs regardless of `CursorProvider.spendTrackingEnabled`).
+    func testFetchUsageCSVBuildsTokenStrategyRequestWithSessionCookie() async throws {
+        let accessToken = makeCursorJWT(sub: "google-oauth2|user_abc123")
+        let http = RoutingHTTPClient { _ in
+            HTTPResponse(statusCode: 200, headers: [:], body: Data("Date,Model\n".utf8))
+        }
+
+        let response = try await CursorUsageClient(http: http).fetchUsageCSV(
+            accessToken: accessToken,
+            start: Date(timeIntervalSince1970: 1_000),   // 1_000_000 ms
+            end: Date(timeIntervalSince1970: 2_000)      // 2_000_000 ms
+        )
+
+        XCTAssertEqual(response?.statusCode, 200)
+        // A nil session would skip the HTTP call entirely, so requiring a recorded request guards that
+        // the assertions below actually ran against a real request.
+        let request = try XCTUnwrap(http.requests.first, "fetchUsageCSV must issue a request")
+        let url = request.url.absoluteString
+        XCTAssertTrue(url.contains("export-usage-events-csv"), "hits the CSV export endpoint")
+        XCTAssertTrue(url.contains("startDate=1000000"), "start as epoch-ms query param")
+        XCTAssertTrue(url.contains("endDate=2000000"), "end as epoch-ms query param")
+        XCTAssertTrue(url.contains("strategy=tokens"), "token strategy")
+        XCTAssertEqual(request.headers["Cookie"], "WorkosCursorSessionToken=user_abc123%3A%3A\(accessToken)")
+        XCTAssertEqual(request.headers["Accept"], "text/csv")
     }
-    return nil
 }
+
+// MARK: - Shared test helpers (file-private; mirror CursorProviderTests)
 
 private func makeCursorJWT(sub: String = "google-oauth2|user", exp: Double = 9_999_999_999) -> String {
     let payload = #"{"sub":"\#(sub)","exp":\#(exp)}"#

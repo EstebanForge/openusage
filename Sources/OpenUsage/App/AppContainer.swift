@@ -12,6 +12,13 @@ final class AppContainer {
     /// Single source of truth for which providers the user has turned off. Both stores consult it (via
     /// injected closures) and the Providers settings tab drives it.
     let enablement: ProviderEnablementStore
+    /// Providers that need a user-supplied API key (OpenRouter today), conforming to `APIKeyManaging`.
+    /// Settings ▸ API Keys lists these and writes key changes through the capability. Empty when no
+    /// installed provider needs a user key, in which case the section hides itself.
+    let apiKeyProviders: [any APIKeyManaging]
+    /// Quota pace notification preferences (master + three triggers). Drives the Settings section and is
+    /// read by `WidgetDataStore.evaluateNotifications`.
+    let notificationSettings: NotificationSettingsStore
     /// Anonymous, opt-out usage telemetry (daily rollups). Exposed so Settings can toggle it and the
     /// app-termination hook can flush any queued events.
     let telemetry: TelemetryRecorder
@@ -21,18 +28,31 @@ final class AppContainer {
     private let refreshTask: Task<Void, Never>
 
     init() {
-        // Alphabetical by display name — this registry order is the default provider order
-        // (`LayoutStore.orderedProviderIDs` falls back to it, and `resetToDefault` seeds it), so the
-        // dashboard, Customize sections, and the per-provider reset menu all read alphabetically.
+        // Capture the user's login-shell environment off-main so provider keys exported in a shell
+        // profile (e.g. OPENROUTER_API_KEY) resolve in a Finder/Dock-launched build, not only when
+        // run from a terminal. Warmed here so the first refresh finds the cache ready.
+        LoginShellEnvironment.shared.prewarm()
+
+        // Default provider order (see AGENTS.md "## Providers"): the three established providers first —
+        // Claude, Codex, Cursor — then every other provider alphabetically by display name. This registry
+        // order is the default provider order (`LayoutStore.orderedProviderIDs` falls back to it, and
+        // `resetToDefault` seeds it), so the dashboard, Customize sections, and the per-provider reset
+        // menu all read this way.
         let providers: [ProviderRuntime] = [
             ClaudeProvider(),
             CodexProvider(),
             CursorProvider(),
+            AntigravityProvider(),
+            CopilotProvider(),
             DevinProvider(),
-            GrokProvider()
+            GrokProvider(),
+            OpenRouterProvider(),
+            ZAIProvider()
         ]
         let registry = WidgetRegistry.from(providers)
+        let apiKeyProviders = providers.compactMap { $0 as? any APIKeyManaging }
         let enablement = ProviderEnablementStore()
+        let notificationSettings = NotificationSettingsStore()
         let layout = LayoutStore(
             registry: registry,
             isProviderEnabled: { [enablement] in enablement.isEnabled($0) }
@@ -41,20 +61,23 @@ final class AppContainer {
             registry: registry,
             providers: providers,
             isProviderEnabled: { [enablement] in enablement.isEnabled($0) },
-            orderedDescriptors: { [layout] in layout.visiblePlaced.compactMap { layout.descriptor(for: $0) } }
+            orderedDescriptors: { [layout] in layout.visiblePlaced.compactMap { layout.descriptor(for: $0) } },
+            notificationSettings: { notificationSettings }
         )
         // Re-enabling a provider should fetch it promptly, so clear any leftover failure backoff before
         // the enablement wake refreshes. `weak` breaks the cycle (dataStore already captures enablement).
         enablement.onProviderEnabled = { [weak dataStore] id in dataStore?.clearFailureBackoff(for: id) }
         self.registry = registry
         self.enablement = enablement
+        self.apiKeyProviders = apiKeyProviders
+        self.notificationSettings = notificationSettings
         self.layout = layout
         self.dataStore = dataStore
 
         // Anonymous, opt-out usage telemetry (two daily-rollup events). Its state lives in a dedicated
-        // UserDefaults suite so the user's opt-out choice and the install id survive BetaSettingsReset's
-        // standard-domain wipe on every beta bump. The snapshot closure reads the live layout/enablement
-        // so `app_daily_active` always reflects the current configuration.
+        // UserDefaults suite, kept separate from app settings so the user's opt-out choice and the
+        // install id stay independent of any settings change. The snapshot closure reads the live
+        // layout/enablement so `app_daily_active` always reflects the current configuration.
         let telemetryStore = TelemetryStore()
         let telemetry = TelemetryRecorder(
             sink: PostHogTelemetrySink(enabled: telemetryStore.enabled),
@@ -89,6 +112,10 @@ final class AppContainer {
         })
         self.refreshTask = Self.startPeriodicRefresh(dataStore: dataStore, telemetry: telemetry)
         localAPI.start()
+        // Become the notification-center delegate so banners show while frontmost — a menu-bar accessory
+        // effectively always is. Notification authorization is requested the first time a trigger is
+        // turned on (from Settings), not at launch — triggers default off. No-op under tests.
+        AppNotifications.shared.registerAsDelegate()
     }
 
     deinit { refreshTask.cancel() }
@@ -101,6 +128,10 @@ final class AppContainer {
         Task {
             while !Task.isCancelled {
                 await dataStore.refreshAll()
+                // Re-evaluate quota pace milestones every tick — after the refresh so it sees fresh data,
+                // and on every loop (not just on a fetch) so pace worsening from elapsed time alone still
+                // alerts even with the popover closed.
+                await dataStore.evaluateNotifications()
                 // Day-rollover beat: emits `app_daily_active` once per local day and flushes any
                 // prior-day provider rollups. Runs on launch and every interval, so always-running
                 // instances still produce a daily-active signal.

@@ -6,31 +6,52 @@ import Foundation
 /// Cursor feeds server-priced dollars from its CSV export (`estimated: false`). The data shape
 /// (`DailyUsageSeries`) is a provider-neutral per-day carrier shared by every source.
 enum SpendTileMapper {
-    /// Append the three spend tiles (Today / Yesterday / Last 30 Days). Callers only invoke this once the
-    /// source was actually read, so a period with no usage is a real, measured zero — it renders
-    /// "$0.00 · 0 tokens", not "No data". "No data" is reserved for a source we couldn't read at all
-    /// (missing log, failed API/CSV), where the caller appends nothing and the tile falls back on its own.
-    /// `estimated` flags the dollar value as a local estimate (drives the ⓘ); pass `false` for
+    /// Append the three spend tiles (Today / Yesterday / Last 30 Days). A period with no usage is left
+    /// unbacked so the tile reads "No data" — a zero here is indistinguishable from "the source hasn't
+    /// accounted for this day yet," and a confident `$0.00 · 0 tokens` contradicts a live session meter
+    /// that proves otherwise. This holds for every source (ccusage for Claude/Codex, the Grok CLI log,
+    /// Cursor's CSV export); there's no per-source branching. "No data" is also what a tile shows when
+    /// the source couldn't be read at all (missing log, failed API/CSV), where the caller appends
+    /// nothing. `estimated` flags the dollar value as a local estimate (drives the ⓘ); pass `false` for
     /// server-priced sources like Cursor.
+    /// `unknownModelsByDay` (Cursor only) maps a `yyyy-MM-dd` day key to the set of model names used that
+    /// day that the pricing manifest can't price. Today / Yesterday pick up their own day's set; Last 30
+    /// Days carries the union across the whole window. Empty (the default) for every other source, so
+    /// their tiles never carry unknown-model warnings.
     static func appendTokenUsage(
         _ usage: DailyUsageSeries,
         to lines: inout [MetricLine],
         now: Date = Date(),
-        estimated: Bool = true
+        estimated: Bool = true,
+        unknownModelsByDay: [String: Set<String>] = [:]
     ) {
         let today = dayKey(from: now)
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now).map(dayKey(from:))
 
-        let todayEntry = usage.daily.first { dayKey(fromUsageDate: $0.date) == today }
-        let yesterdayEntry = usage.daily.first { dayKey(fromUsageDate: $0.date) == yesterday }
-
-        lines.append(dayUsageLine(label: "Today", entry: todayEntry, estimated: estimated))
-        lines.append(dayUsageLine(label: "Yesterday", entry: yesterdayEntry, estimated: estimated))
+        if let entry = usage.daily.first(where: { dayKey(fromUsageDate: $0.date) == today }), hasUsage(entry) {
+            lines.append(dayUsageLine(label: "Today", entry: entry, estimated: estimated,
+                                      unknownModels: sortedModels(unknownModelsByDay[today])))
+        }
+        if let entry = usage.daily.first(where: { dayKey(fromUsageDate: $0.date) == yesterday }), hasUsage(entry) {
+            lines.append(dayUsageLine(label: "Yesterday", entry: entry, estimated: estimated,
+                                      unknownModels: sortedModels(yesterday.flatMap { unknownModelsByDay[$0] })))
+        }
 
         let totalTokens = usage.daily.reduce(0) { $0 + $1.totalTokens }
         let costSamples = usage.daily.compactMap(\.costUSD)
         let totalCost = costSamples.isEmpty ? nil : costSamples.reduce(0, +)
-        lines.append(.values(label: "Last 30 Days", values: spendValues(tokens: totalTokens, costUSD: totalCost, estimated: estimated)))
+        if totalTokens > 0 || (totalCost ?? 0) > 0 {
+            let allUnknown = unknownModelsByDay.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+            lines.append(.values(label: "Last 30 Days",
+                                 values: spendValues(tokens: totalTokens, costUSD: totalCost, estimated: estimated),
+                                 unknownModels: sortedModels(allUnknown)))
+        }
+    }
+
+    /// A period with any real usage: tokens used, dollars priced, or both. A zero-token, zero-cost day
+    /// is idle and gets no tile (→ "No data"), not a fabricated `$0.00 · 0 tokens`.
+    private static func hasUsage(_ entry: DailyUsageEntry) -> Bool {
+        entry.totalTokens > 0 || (entry.costUSD ?? 0) > 0
     }
 
     /// Number of days before `now` the trend window spans; with `now` itself that's 31 calendar bars,
@@ -128,26 +149,28 @@ enum SpendTileMapper {
         return nil
     }
 
-    private static func dayUsageLine(label: String, entry: DailyUsageEntry?, estimated: Bool) -> MetricLine {
-        .values(label: label, values: spendValues(tokens: entry?.totalTokens ?? 0, costUSD: entry?.costUSD, estimated: estimated))
+    private static func dayUsageLine(label: String, entry: DailyUsageEntry, estimated: Bool, unknownModels: [String]) -> MetricLine {
+        .values(label: label, values: spendValues(tokens: entry.totalTokens, costUSD: entry.costUSD, estimated: estimated),
+                unknownModels: unknownModels)
+    }
+
+    /// Stable, de-duplicated display order for a period's unknown-model names (the set is unordered).
+    private static func sortedModels(_ models: Set<String>?) -> [String] {
+        (models ?? []).sorted()
     }
 
     /// One period's spend as raw values: the estimated dollars followed by the measured token count,
     /// rendered combined as "$4.08 · 1.2M tokens". The token value carries the "tokens" unit (the same
     /// way Codex credits carry "credits"), so the three spend tiles read consistently.
     ///
-    /// A zero is a real, measured value here, not absence — a day with no usage genuinely cost nothing,
-    /// so it reads "$0.00 · 0 tokens" rather than "No data" (which is reserved for a source we couldn't
-    /// read at all, where no line is appended). The dollar is shown even at $0.00; the *only* time it's
-    /// omitted is an unpriced day that still used tokens (e.g. an unknown model), whose cost is genuinely
-    /// unknown — not zero — so that row shows just the token count. `estimated` flags the dollars as a
-    /// local estimate (the ⓘ); token counts are always measured, never flagged.
+    /// Only called for a period with real usage (see `hasUsage`), so the dollar is omitted only for an
+    /// unpriced day that still used tokens (e.g. an unknown model) — that row shows just the token count,
+    /// since its cost is genuinely unknown rather than zero. `estimated` flags the dollars as a local
+    /// estimate (the ⓘ); token counts are always measured, never flagged.
     private static func spendValues(tokens: Int, costUSD: Double?, estimated: Bool) -> [MetricValue] {
         var values: [MetricValue] = []
         if let costUSD {
             values.append(MetricValue(number: costUSD, kind: .dollars, estimated: estimated))
-        } else if tokens == 0 {
-            values.append(MetricValue(number: 0, kind: .dollars, estimated: estimated))
         }
         values.append(MetricValue(number: Double(tokens), kind: .count, label: "tokens"))
         return values

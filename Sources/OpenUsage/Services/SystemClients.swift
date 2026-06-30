@@ -6,7 +6,13 @@ protocol EnvironmentReading: Sendable {
 
 struct ProcessEnvironmentReader: EnvironmentReading {
     func value(for name: String) -> String? {
-        ProcessInfo.processInfo.environment[name]
+        // The process environment first (set by launchd, `launchctl setenv`, or a terminal launch),
+        // then the captured login-shell environment — so keys a user exports in their shell profile
+        // still resolve in a packaged app launched from Finder/Dock. See `LoginShellEnvironment`.
+        if let value = ProcessInfo.processInfo.environment[name]?.nilIfEmpty {
+            return value
+        }
+        return LoginShellEnvironment.shared.value(for: name)
     }
 }
 
@@ -14,6 +20,9 @@ protocol TextFileAccessing: Sendable {
     func exists(_ path: String) -> Bool
     func readText(_ path: String) throws -> String
     func writeText(_ path: String, _ text: String) throws
+    /// Remove the file at `path`. A missing file is not an error — the caller wants the key gone, and
+    /// it already is. Used by the in-app API-key editor's Remove / Clear-override actions.
+    func remove(_ path: String) throws
 }
 
 struct LocalTextFileAccessor: TextFileAccessing {
@@ -30,6 +39,12 @@ struct LocalTextFileAccessor: TextFileAccessing {
         let parent = URL(fileURLWithPath: expanded).deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try text.write(toFile: expanded, atomically: true, encoding: .utf8)
+    }
+
+    func remove(_ path: String) throws {
+        let expanded = expandHome(path)
+        guard FileManager.default.fileExists(atPath: expanded) else { return }
+        try FileManager.default.removeItem(atPath: expanded)
     }
 }
 
@@ -93,6 +108,10 @@ protocol KeychainAccessing: Sendable {
     func writeGenericPassword(service: String, value: String) throws
     func readGenericPasswordForCurrentUser(service: String) throws -> String?
     func writeGenericPasswordForCurrentUser(service: String, value: String) throws
+    /// Read a generic password scoped to an explicit account (`-a`). Used when another app stored the
+    /// item under a known account name (e.g. Antigravity's `agy` token under service `gemini`,
+    /// account `antigravity`) rather than the current user.
+    func readGenericPassword(service: String, account: String) throws -> String?
 }
 
 extension KeychainAccessing {
@@ -102,6 +121,12 @@ extension KeychainAccessing {
 
     func writeGenericPasswordForCurrentUser(service: String, value: String) throws {
         try writeGenericPassword(service: service, value: value)
+    }
+
+    /// Default for mocks that don't model accounts: fall back to the service-only lookup. The real
+    /// `SecurityKeychainAccessor` overrides this to pass `-a <account>`.
+    func readGenericPassword(service: String, account: String) throws -> String? {
+        try readGenericPassword(service: service)
     }
 }
 
@@ -124,6 +149,10 @@ struct SecurityKeychainAccessor: KeychainAccessing {
 
     func readGenericPasswordForCurrentUser(service: String) throws -> String? {
         try readPassword(["find-generic-password", "-a", currentUserAccount(), "-s", service, "-w"], service: service)
+    }
+
+    func readGenericPassword(service: String, account: String) throws -> String? {
+        try readPassword(["find-generic-password", "-a", account, "-s", service, "-w"], service: service)
     }
 
     private func readPassword(_ arguments: [String], service: String) throws -> String? {

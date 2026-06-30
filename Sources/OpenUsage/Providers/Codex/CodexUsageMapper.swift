@@ -76,8 +76,10 @@ enum CodexUsageMapper {
             ))
         }
 
-        appendAdditionalRateLimits(from: body, to: &lines, now: now)
-        appendReviewLimit(from: body, to: &lines, now: now)
+        // Model-specific limits (e.g. GPT-5.3-Codex-Spark) ride in a separate `additional_rate_limits`
+        // array, each entry reusing the primary/secondary window shape. Surfaced as their own Spark /
+        // Spark Weekly meters (issue #796) — the JS edition had these; the Swift rewrite dropped them.
+        lines.append(contentsOf: sparkLines(body: body, now: now))
 
         // On-demand rate-limit reset credits, shown before Credits — mirrors the JS plugin (PR #577).
         // The row reads "2 available" (the count is carried raw, so the menu-bar tile reads the same
@@ -100,60 +102,6 @@ enum CodexUsageMapper {
         return CodexMappedUsage(plan: formatCodexPlan(body["plan_type"]), lines: lines)
     }
 
-    private static func appendAdditionalRateLimits(from body: [String: Any], to lines: inout [MetricLine], now: Date) {
-        guard let entries = body["additional_rate_limits"] as? [[String: Any]] else { return }
-        for entry in entries {
-            guard let rateLimit = entry["rate_limit"] as? [String: Any] else { continue }
-            let rawName = (entry["limit_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let shortName = rawName.replacingOccurrences(
-                of: #"^GPT-[\d.]+-Codex-"#,
-                with: "",
-                options: .regularExpression
-            )
-            let label = shortName.isEmpty ? (rawName.isEmpty ? "Model" : rawName) : shortName
-
-            if let primary = rateLimit["primary_window"] as? [String: Any],
-               let used = ProviderParse.number(primary["used_percent"]) {
-                let periodDurationMs = readPeriodMs(primary) ?? sessionPeriodMs
-                lines.append(progress(
-                    label: label,
-                    used: normalizedUsedPercent(used, resetWindow: primary, now: now, periodDurationMs: periodDurationMs),
-                    resetWindow: primary,
-                    now: now,
-                    periodDurationMs: periodDurationMs
-                ))
-            }
-            if let secondary = rateLimit["secondary_window"] as? [String: Any],
-               let used = ProviderParse.number(secondary["used_percent"]) {
-                let periodDurationMs = readPeriodMs(secondary) ?? weeklyPeriodMs
-                lines.append(progress(
-                    label: "\(label) Weekly",
-                    used: normalizedUsedPercent(used, resetWindow: secondary, now: now, periodDurationMs: periodDurationMs),
-                    resetWindow: secondary,
-                    now: now,
-                    periodDurationMs: periodDurationMs
-                ))
-            }
-        }
-    }
-
-    private static func appendReviewLimit(from body: [String: Any], to lines: inout [MetricLine], now: Date) {
-        guard let review = body["code_review_rate_limit"] as? [String: Any],
-              let window = review["primary_window"] as? [String: Any],
-              let used = ProviderParse.number(window["used_percent"])
-        else {
-            return
-        }
-        let periodDurationMs = readPeriodMs(window) ?? weeklyPeriodMs
-        lines.append(progress(
-            label: "Reviews",
-            used: normalizedUsedPercent(used, resetWindow: window, now: now, periodDurationMs: periodDurationMs),
-            resetWindow: window,
-            now: now,
-            periodDurationMs: periodDurationMs
-        ))
-    }
-
     private static func progress(
         label: String,
         used: Double,
@@ -169,6 +117,58 @@ enum CodexUsageMapper {
             resetsAt: resetDate(resetWindow, now: now),
             periodDurationMs: periodDurationMs
         )
+    }
+
+    /// Spark (and any future model-specific) limits from `additional_rate_limits`. Each array entry is a
+    /// named limit whose `rate_limit` reuses the primary (5-hour) / secondary (weekly) window shape, so
+    /// the parsing mirrors the core Session/Weekly path exactly — including the fresh-window 1%→0
+    /// normalization. We surface the entry whose `limit_name`/`metered_feature` names Spark as the
+    /// `Spark` and `Spark Weekly` meters; a non-dictionary or null array element is skipped rather than
+    /// discarding its valid siblings. Returns an empty list when the field is absent or carries no Spark
+    /// entry (the common case for accounts without the limit), so those rows simply read "No data".
+    private static func sparkLines(body: [String: Any], now: Date) -> [MetricLine] {
+        guard let rawEntries = body["additional_rate_limits"] as? [Any] else { return [] }
+        let entries = rawEntries.compactMap { $0 as? [String: Any] }
+        guard let spark = entries.first(where: isSparkEntry),
+              let rateLimit = spark["rate_limit"] as? [String: Any]
+        else {
+            return []
+        }
+
+        var lines: [MetricLine] = []
+        let primaryWindow = rateLimit["primary_window"] as? [String: Any]
+        let secondaryWindow = rateLimit["secondary_window"] as? [String: Any]
+
+        if let used = ProviderParse.number(primaryWindow?["used_percent"]) {
+            let periodDurationMs = readPeriodMs(primaryWindow) ?? sessionPeriodMs
+            lines.append(progress(
+                label: "Spark",
+                used: normalizedUsedPercent(used, resetWindow: primaryWindow, now: now, periodDurationMs: periodDurationMs),
+                resetWindow: primaryWindow,
+                now: now,
+                periodDurationMs: periodDurationMs
+            ))
+        }
+        if let used = ProviderParse.number(secondaryWindow?["used_percent"]) {
+            let periodDurationMs = readPeriodMs(secondaryWindow) ?? weeklyPeriodMs
+            lines.append(progress(
+                label: "Spark Weekly",
+                used: normalizedUsedPercent(used, resetWindow: secondaryWindow, now: now, periodDurationMs: periodDurationMs),
+                resetWindow: secondaryWindow,
+                now: now,
+                periodDurationMs: periodDurationMs
+            ))
+        }
+        return lines
+    }
+
+    /// True when an `additional_rate_limits` entry is the Spark limit — matched on either `limit_name`
+    /// ("GPT-5.3-Codex-Spark") or `metered_feature`, case-insensitively, so a wording change on either
+    /// field still resolves it.
+    private static func isSparkEntry(_ entry: [String: Any]) -> Bool {
+        [entry["limit_name"], entry["metered_feature"]]
+            .compactMap { ($0 as? String)?.lowercased() }
+            .contains { $0.contains("spark") }
     }
 
     private static func resetDate(_ window: [String: Any]?, now: Date) -> Date? {
