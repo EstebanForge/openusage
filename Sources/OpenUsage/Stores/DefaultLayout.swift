@@ -7,7 +7,7 @@ import Foundation
 /// here: an empty saved order reconciles to plain registry order in `LayoutStore`.
 enum DefaultLayout {
     static let metricIDs: [String] = [
-        "antigravity.geminiPro", "antigravity.geminiFlash", "antigravity.claude",
+        "antigravity.geminiPro", "antigravity.geminiWeekly", "antigravity.claude", "antigravity.claudeWeekly",
 
         "claude.session", "claude.weekly", "claude.trend",
         "claude.extra", "claude.today", "claude.yesterday", "claude.last30",
@@ -18,11 +18,12 @@ enum DefaultLayout {
         "cursor.usage", "cursor.auto", "cursor.api", "cursor.trend",
         "cursor.onDemand", "cursor.today", "cursor.yesterday", "cursor.last30",
 
-        "copilot.premium", "copilot.extra", "copilot.chat", "copilot.completions",
+        "copilot.premium", "copilot.extra", "copilot.orgCredits", "copilot.orgSpend",
+        "copilot.chat", "copilot.completions",
 
         "devin.daily", "devin.weekly", "devin.extra",
 
-        "grok.creditsUsed", "grok.trend",
+        "grok.weekly", "grok.trend",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
 
         "openrouter.credits", "openrouter.balance",
@@ -51,11 +52,11 @@ enum DefaultLayout {
     ]
 
     /// Metrics pinned to the menu bar on first launch, so the app shows real numbers out of the box
-    /// instead of a lone icon. Two per provider for Claude, Codex, and Cursor — the per-provider cap
-    /// (`LayoutStore.maxPinsPerProvider`). Filtered to the active
+    /// instead of a lone icon. Two per provider for Antigravity, Claude, Codex, and Cursor — the
+    /// per-provider cap (`LayoutStore.maxPinsPerProvider`). Filtered to the active
     /// registry by `LayoutStore`, like `metricIDs`.
     static let pinnedMetricIDs: [String] = [
-        "antigravity.geminiPro",
+        "antigravity.geminiPro", "antigravity.geminiWeekly",
         "claude.session", "claude.weekly",
         "codex.session", "codex.weekly",
         "cursor.auto", "cursor.api",
@@ -70,21 +71,23 @@ enum DefaultLayout {
     /// Filtered to the active registry by `LayoutStore`, and only seeded on a genuinely fresh launch
     /// (existing layouts keep everything always-shown unless they reset customization).
     static let expandedMetricIDs: [String] = [
-        // Antigravity: Gemini Pro + Flash stay above the fold; only the non-Gemini (Claude) pool is secondary.
-        "antigravity.claude",
+        // Antigravity: the Gemini pool pair (5h + weekly) stays above the fold; the non-Gemini
+        // (Claude) pool pair sits below the caret.
+        "antigravity.claude", "antigravity.claudeWeekly",
         // Claude's core meters (Session, Weekly, Extra, Usage Trend) stay above the fold; spend-history
         // rows sit below the caret. Matches every other provider's "core above, history below" shape.
-        "claude.sonnet", "claude.today", "claude.yesterday", "claude.last30",
+        "claude.sonnet", "claude.fable", "claude.today", "claude.yesterday", "claude.last30",
         // Codex's core Session/Weekly meters and Usage Trend stay above the fold; Spark (the optional
         // model-specific limits), credits, reset details, and spend rows sit below the caret.
         "codex.spark", "codex.sparkWeekly",
         "codex.credits", "codex.rateLimitResets", "codex.today", "codex.yesterday", "codex.last30",
         "cursor.onDemand", "cursor.requests", "cursor.credits",
         "cursor.today", "cursor.yesterday", "cursor.last30",
-        // Copilot: Credits (the metered premium pool) + Extra Usage stay above the fold; Chat +
-        // Completions sit below the caret. They carry real counts on free only — on paid they're
-        // unlimited (suppressed), so they read "No data" there.
-        "copilot.chat", "copilot.completions",
+        // Copilot: Credits (the metered premium pool) + Extra Usage stay above the fold; the org
+        // billing pair (org-managed Business/Enterprise seats) and Chat + Completions sit below the
+        // caret. Chat/Completions carry real counts on free only — on paid they're unlimited
+        // (suppressed), so they read "No data" there.
+        "copilot.orgCredits", "copilot.orgSpend", "copilot.chat", "copilot.completions",
         "devin.extra",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
         // OpenRouter: Credits meter + Balance stay above the fold; period spend and the per-key cap

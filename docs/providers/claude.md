@@ -9,6 +9,7 @@ Tracks your Claude subscription limits using the login you already have from Cla
 | Session | 5-hour rolling window usage |
 | Weekly | 7-day window usage |
 | Sonnet | Separate weekly Sonnet limit (plan-dependent) |
+| Fable | Separate weekly Fable limit (model-scoped window from the `limits` array) |
 | Extra Usage | Extra-usage credits spent against your monthly cap |
 | Today / Yesterday / Last 30 Days | Local spend, as cost, tokens, or both (see below) |
 | Plan | Your plan name (optional widget) |
@@ -25,14 +26,15 @@ If one source holds an expired or "locked out" token, OpenUsage falls back to th
 
 ## The spend tiles
 
-Today / Yesterday / Last 30 Days are computed **locally** from your Claude Code logs by running `ccusage` through whichever JavaScript package runner you already have — [Bun](https://bun.sh) (`bunx`) is preferred, otherwise `pnpm dlx`, `yarn dlx`, `npm exec`, or `npx`. Days are grouped in your Mac's local time zone, so they line up with your own calendar. Each period is one tile showing cost and tokens together (`$4.08 · 1.2M tokens`); a day with no usage reads **No data** rather than a misleading `$0.00 · 0 tokens` — the same as every other spend-tracking provider. The live Session and Weekly meters are unaffected. The dollars are estimated from token counts (that's the ⓘ); the token counts themselves are measured. No log data leaves your Mac.
+Today / Yesterday / Last 30 Days are computed **locally**: OpenUsage reads the Claude Code session logs under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR`) itself — no external tools needed. Cowork (the Claude desktop app's agent mode) counts too: it writes the same logs into per-session folders under `~/Library/Application Support/Claude/local-agent-mode-sessions/`, and OpenUsage scans those as well, so desktop agent sessions show up in the tiles alongside terminal ones. Days are grouped in your Mac's local time zone, so they line up with your own calendar. Each period is one tile showing cost and tokens together (`$4.08 · 1.2M tokens`); a day with no usage reads **No data** rather than a misleading `$0.00 · 0 tokens` — the same as every other spend-tracking provider. The live Session and Weekly meters are unaffected. The dollars are estimated from token counts at API rates (that's the ⓘ) using the shared [model pricing](../pricing.md); the token counts themselves are measured. No log data leaves your Mac.
 
 ## Troubleshooting
 
 - **"Not logged in"** — run `claude` and sign in, then refresh.
+- **"Signed in to the Claude desktop app?"** — a login done only in the Claude desktop app is stored encrypted in a way OpenUsage can't read. Run `claude` in a terminal and sign in once; both logins coexist, and OpenUsage picks up the CLI one.
 - **"Re-login for live usage"** (an amber warning on the Claude header) — your saved login can authenticate for inference but can't read your subscription limits, because it lacks the `user:profile` access (this is what an inference-only token from `claude setup-token` carries). Run `claude` and sign in again with your Claude account, then refresh; the spend tiles keep working in the meantime.
-- **"Rate limited, retry in ~Nm"** — the usage API is throttling; OpenUsage shows when to expect data again and keeps your last values.
-- **Spend tiles show "No data"** — OpenUsage needs a package runner on its `PATH` to run `ccusage`. Install [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`), or make sure `npx`/`npm` is available (any Node.js install). If you use a version manager (nvm, fnm, volta), OpenUsage looks in the common locations, but a global Bun or Node install is the most reliable.
+- **"Updates blocked by Anthropic"** (an amber warning on the Claude header) — the usage API is throttling OpenUsage. It keeps your last values, shows when it will retry, and backs off in the meantime — manual refreshes only extend the block, so the best fix is patience.
+- **Spend tiles show "No data"** — OpenUsage found no Claude Code logs in the last 30 days. If your logs live somewhere custom, set `CLAUDE_CONFIG_DIR` so both Claude Code and OpenUsage look in the same place.
 
 ## Under the hood
 

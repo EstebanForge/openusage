@@ -22,12 +22,29 @@ final class AppContainer {
     /// Anonymous, opt-out usage telemetry (daily rollups). Exposed so Settings can toggle it and the
     /// app-termination hook can flush any queued events.
     let telemetry: TelemetryRecorder
+    /// Source of truth for the popover's transparency: the persisted Increase Transparency toggle, the
+    /// ephemeral secret-code easter-egg state, and the system accessibility flags it yields to. Read by both
+    /// the SwiftUI surface and the AppKit panel (`StatusItemController`).
+    let transparency: PopoverTransparencyStore
+    /// One-time onboarding state (the first-run Customize hint card). Only ever marked pending by
+    /// `FirstRunSeeder` on a fresh install, so existing installs never see the card.
+    let onboarding: OnboardingStore
+    /// The provider runtimes, kept so on-demand credential detection (the Customize "Reset All" reseed)
+    /// can re-probe `hasLocalCredentials()` the same way first-run seeding does.
+    private let providers: [ProviderRuntime]
     /// Read-only usage API on 127.0.0.1:6736 for other local apps (silently off when the port is taken).
     private let localAPI: LocalUsageServer
     // A `let` of a `Sendable` `Task` is implicitly nonisolated, so the nonisolated `deinit` can cancel it.
     private let refreshTask: Task<Void, Never>
+    /// The fresh-install credential-detection pass (see `FirstRunSeeder`); `nil` on every later launch.
+    private let seedTask: Task<Void, Never>?
+    /// The new-provider credential-detection pass (see `NewProviderSeeder`); `nil` unless this launch is
+    /// the first with a provider the install has never seen.
+    private let newProviderTask: Task<Void, Never>?
 
-    init() {
+    /// `isFreshInstall` must be captured by the caller BEFORE `SettingsMigrator.migrate()` runs (the
+    /// migrator's schema stamp makes the defaults domain non-empty). See `AppDelegate`.
+    init(isFreshInstall: Bool = false) {
         // Capture the user's login-shell environment off-main so provider keys exported in a shell
         // profile (e.g. OPENROUTER_API_KEY) resolve in a Finder/Dock-launched build, not only when
         // run from a terminal. Warmed here so the first refresh finds the cache ready.
@@ -67,6 +84,24 @@ final class AppContainer {
         // Re-enabling a provider should fetch it promptly, so clear any leftover failure backoff before
         // the enablement wake refreshes. `weak` breaks the cycle (dataStore already captures enablement).
         enablement.onProviderEnabled = { [weak dataStore] id in dataStore?.clearFailureBackoff(for: id) }
+        // Fresh installs start minimal: seed the enabled-provider list (Claude/Codex/Cursor right away,
+        // then the detected set once the local credential probe finishes). No-op on every later launch.
+        let onboarding = OnboardingStore()
+        self.seedTask = FirstRunSeeder.seedIfNeeded(
+            isFreshInstall: isFreshInstall,
+            providers: providers,
+            enablement: enablement,
+            onboarding: onboarding
+        )
+        // Providers added by an update get the same credential detection on their first launch — enabled
+        // only when the user actually has the tool. Runs every launch; a no-op unless the registry has a
+        // provider this install has never seen (fresh installs were just baselined by FirstRunSeeder).
+        self.newProviderTask = NewProviderSeeder.reconcileIfNeeded(
+            providers: providers,
+            enablement: enablement
+        )
+        self.providers = providers
+        self.onboarding = onboarding
         self.registry = registry
         self.enablement = enablement
         self.apiKeyProviders = apiKeyProviders
@@ -103,6 +138,7 @@ final class AppContainer {
             telemetry?.record(providerID: providerID, outcome: outcome, category: category, manual: manual)
         }
         self.telemetry = telemetry
+        self.transparency = PopoverTransparencyStore()
         self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore] in
             LocalUsageAPI.State(
                 enabledOrderedIDs: layout.providerOrder.filter { enablement.isEnabled($0) },
@@ -118,14 +154,41 @@ final class AppContainer {
         AppNotifications.shared.registerAsDelegate()
     }
 
-    deinit { refreshTask.cancel() }
+    deinit {
+        refreshTask.cancel()
+        seedTask?.cancel()
+        newProviderTask?.cancel()
+    }
+
+    /// Re-runs first-launch credential detection on demand — the enablement half of the Customize
+    /// "Reset All" action (`LayoutStore.resetToDefault` handles metrics, order, pins, and expansion).
+    /// Delegates to `FirstRunSeeder.reseed`; returns its detection task so callers can await it.
+    @discardableResult
+    func reseedEnabledProviders() -> Task<Void, Never> {
+        FirstRunSeeder.reseed(providers: providers, enablement: enablement)
+    }
 
     /// Drives live updates: refresh on launch, then again every refresh interval. Each pass honors the
     /// cache, so it only hits the network once a snapshot has actually expired. `@Observable` propagates
     /// the resulting snapshot changes to the menu-bar label and any open widgets, so the UI refreshes on
     /// its own instead of only when the popover opens.
+    ///
+    /// Between passes the loop sleeps via `RefreshWakeSignal`, which wakes it early when the user
+    /// enables/disables a provider so a newly-enabled provider is fetched promptly instead of waiting out
+    /// the full interval. The signal subscribes BEFORE the first pass and buffers, so an enablement change
+    /// landing while a pass is still running (first-run credential detection, `NewProviderSeeder`, the
+    /// Customize "Reset All" reseed — all of which typically finish faster than the network fetches) is
+    /// never lost. Each pass still honors the cache (and the per-provider failure backoff), so an early
+    /// wake only hits the network for a provider whose snapshot has actually expired.
+    ///
+    /// The wake is deliberately scoped to `ProviderEnablementStore.didChangeNotification` — NOT the
+    /// firehose `UserDefaults.didChangeNotification`, which fires for the app's own snapshot-cache writes,
+    /// Sparkle's update bookkeeping, and unrelated global-domain changes from other processes. Waking on
+    /// that, with no minimum interval before re-refreshing, collapsed the fixed 5-minute cadence into a
+    /// refresh storm.
     private static func startPeriodicRefresh(dataStore: WidgetDataStore, telemetry: TelemetryRecorder) -> Task<Void, Never> {
         Task {
+            let wakeSignal = RefreshWakeSignal()
             while !Task.isCancelled {
                 await dataStore.refreshAll()
                 // Re-evaluate quota pace milestones every tick — after the refresh so it sees fresh data,
@@ -136,33 +199,8 @@ final class AppContainer {
                 // prior-day provider rollups. Runs on launch and every interval, so always-running
                 // instances still produce a daily-active signal.
                 telemetry.tick()
-                await waitForNextRefresh()
+                await wakeSignal.waitForWake(timeout: RefreshSetting.interval)
             }
-        }
-    }
-
-    /// Sleep for the refresh interval, but wake early when the user enables/disables a provider so a
-    /// newly-enabled provider is fetched promptly instead of waiting out the full interval. Each pass still
-    /// honors the cache (and the per-provider failure backoff), so an early wake only hits the network for
-    /// a provider whose snapshot has actually expired.
-    ///
-    /// Deliberately scoped to `ProviderEnablementStore.didChangeNotification` — NOT the firehose
-    /// `UserDefaults.didChangeNotification`, which fires for the app's own snapshot-cache writes, Sparkle's
-    /// update bookkeeping, and unrelated global-domain changes from other processes. Waking on that, with
-    /// no minimum interval before re-refreshing, collapsed the fixed 5-minute cadence into a refresh storm.
-    private static func waitForNextRefresh() async {
-        let interval = RefreshSetting.interval
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                try? await Task.sleep(for: .seconds(interval))
-            }
-            group.addTask {
-                for await _ in NotificationCenter.default.notifications(named: ProviderEnablementStore.didChangeNotification) {
-                    break
-                }
-            }
-            _ = await group.next()
-            group.cancelAll()
         }
     }
 }

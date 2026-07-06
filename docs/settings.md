@@ -1,11 +1,12 @@
 # Settings
 
-Settings lives inside the popover — there is no separate window. Open it from the footer's **Settings** button, with ⌘, while the popover is showing, or by right-clicking the menu bar icon and choosing Settings. The dashboard slides over to the Settings screen, which carries a back button in its top-left corner. Go back with that button, the ⌘, shortcut, or Esc (Esc always backs out to the dashboard first — pressing it again closes the popover).
+Settings lives inside the popover — there is no separate window. Open it from the footer's **Options** menu, with ⌘, while the popover is showing, or by right-clicking the menu bar icon and choosing Settings. The dashboard slides over to the Settings screen, which carries a back button in its top-left corner. Go back with that button, the ⌘, shortcut, or Esc (Esc always backs out to the dashboard first — pressing it again closes the popover).
 
 ## Startup
 
 | Setting | Options | What it does |
 |---|---|---|
+| Show Total Spend | on/off | Whether the cross-provider [Total Spend](dashboard.md#total-spend) card shows at the top of the dashboard. On by default; the card appears whenever at least one enabled provider tracks spend (Claude, Codex, Cursor, Grok). |
 | Launch at Login | on/off | Registers the app as a login item (the system's login-item registry is the source of truth). |
 | Global Shortcut | record a shortcut | Global shortcut that toggles the popover from anywhere. Click the field and press a combo; the ⓧ clears it and disables the shortcut. |
 
@@ -13,10 +14,11 @@ Settings lives inside the popover — there is no separate window. Open it from 
 
 | Setting | Options | What it does |
 |---|---|---|
-| Menu Style | Text / Bars | How pinned metrics render in the menu bar. See [Menu bar](menu-bar.md). |
+| Menu Style | Text / Bars | How starred metrics render in the menu bar. See [Menu bar](menu-bar.md). |
 | Theme | System / Light / Dark | App-wide appearance override for the popover. |
 | Density | Default / Compact | Default breathes; Compact is a real information-dense mode — text steps down one size, rows and provider sections pull together, and Customize / Settings rows tighten with them. In both, consecutive one-line metrics (Today / Yesterday / …) pull together; Compact pulls harder. |
 | Time Format | Auto / 12-hour / 24-hour | How exact times read (e.g. "Resets today at 6:38 PM" vs "18:38"). Auto follows the system. |
+| Increase Transparency | Off / On | Off (default) keeps the popover a solid panel. On makes it translucent so your desktop shows through, while keeping the numbers legible. It pauses automatically when you have the macOS **Reduce Transparency** or **Increase Contrast** accessibility setting turned on (a note explains why), so it never works against those preferences. |
 
 ## Usage Display
 
@@ -38,7 +40,7 @@ OpenUsage can alert you with a macOS notification when a metric's pace gets wors
 
 Each alert fires **once per metric per reset period**, so you get a heads-up without repeats on every refresh. Alerts fire only when a quota *worsens* while OpenUsage is running — a quota that's already in a bad state when you launch won't alert until it recovers and worsens again, or a new period begins. If a metric recovers (its pace eases back) and later worsens again, it can alert again. When a new period begins, the slate is wiped clean. Metrics without a reset window, or while their data can't be read, don't pace and never alert. Turn all three off to silence everything. When several alerts fire at once, they stack into a single grouped banner.
 
-All three alerts default off. The first time you turn one on, OpenUsage asks for notification permission; if you decline (or turn notifications off for OpenUsage in System Settings later), a warning mark appears on the Notifications header and an "Open System Settings" button shows under the toggles so you can re-enable them. A notification's title is the alert name, its subtitle names the provider and metric, and its body is the plain-language verdict.
+All three alerts default off. The first time you turn one on, OpenUsage asks for notification permission; if you decline (or turn notifications off for OpenUsage in System Settings later), a warning mark appears on the Notifications header and an "Open System Settings" button shows under the toggles so you can re-enable them. A notification's title is the alert name, its subtitle names the provider and metric, and its body is the plain-language verdict. Tapping an alert opens the popover on the dashboard.
 
 ## Privacy
 
@@ -60,4 +62,6 @@ See [Logging](logging.md) for the full behavior: subsystem tags, the file size c
 
 The app version shows in the popover footer.
 
-Your settings carry across updates — layout, pins, preferences, and the menu-bar shortcut all stay put. When an update changes how a setting is stored, the app upgrades it in place on launch, stepping through any in-between versions if you skipped a few. Nothing is reset. (Earlier betas wiped all settings on every update; that no longer happens.)
+Your settings carry across updates — layout, stars, preferences, and the menu-bar shortcut all stay put. When an update changes how a setting is stored, the app upgrades it in place on launch, stepping through any in-between versions if you skipped a few. Nothing is reset. (Earlier betas wiped all settings on every update; that no longer happens.)
+
+Which providers you have on also carries across updates — your choices are never overridden. A brand-new install picks its starting set by detecting the AI tools on your Mac (see [Dashboard § First launch](dashboard.md#first-launch)). When an update ships a provider you've never seen, the same local detection runs once for just that provider and turns it on only if you actually have the tool; everything you've already decided about stays exactly as you set it. See [Which Providers Are On](provider-enablement.md).

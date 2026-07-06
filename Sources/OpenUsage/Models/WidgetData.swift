@@ -8,7 +8,6 @@ struct WidgetData: Hashable {
     /// Hover note for locally-estimated spend tiles (Codex/Claude/Grok Today / Yesterday / Last 30
     /// Days), whose dollars are imputed from token counts rather than billed.
     static let localEstimateNote = "Estimated locally, so it may be off"
-    static let ccusageEstimateNote = localEstimateNote
     /// Hover note for Cursor spend tiles, whose spend comes from Cursor's usage-history export.
     static let cursorUsageHistoryNote = "From your Cursor usage history."
     /// Headline shown on a placed tile with no real backing metric (em dash, U+2014).
@@ -37,10 +36,13 @@ struct WidgetData: Hashable {
     /// credits — one entry per still-available credit). Empty for every other row. Kept as raw `Date`s so
     /// the tooltip formats live and follows the global relative/absolute mode (see `expiryTooltip`).
     var expiriesAt: [Date] = []
-    /// Names of models this period's spend used that the pricing manifest can't price (Cursor spend tiles
-    /// only). Their tokens are counted but their cost is $0, so the period's dollar figure is incomplete.
+    /// Names of models this period's spend used that the pricing manifest can't price. Their tokens are
+    /// counted but their cost is incomplete, so the period's dollar figure can be understated.
     /// Drives the label warning triangle and its hover list. Empty for every other row.
     var unknownModels: [String] = []
+    /// Period-scoped model spend/tokens for the Today / Yesterday / Last 30 Days hover popover. Nil for
+    /// non-spend rows and for periods where the provider has no model-level data.
+    var modelBreakdown: ModelUsageBreakdown?
     var periodDurationMs: Int?
     var valueTextOverride: String?
     var subtitleOverride: String?
@@ -74,12 +76,16 @@ struct WidgetData: Hashable {
     var isUsagePeriod: Bool = false
     /// Per-day points for a Usage Trend row (empty for every other tile). Set true `isChart` flags the
     /// row so the view draws the sparkline instead of the value layout; `chartNote` is the source line
-    /// shown on hover (e.g. "Estimated from local logs at API rates").
+    /// shown on hover (e.g. "From your Claude usage history (estimated)").
     var isChart: Bool = false
     var chartPoints: [MetricChartPoint] = []
     var chartNote: String?
 
     var isBounded: Bool { limit != nil }
+
+    var hasModelBreakdown: Bool {
+        hasData && isUsagePeriod && !(modelBreakdown?.models.isEmpty ?? true)
+    }
 
     /// `values` projected through `selection` — exactly what this tile shows.
     var selectedValues: [MetricValue] { selection.apply(to: values) }
@@ -319,16 +325,19 @@ struct WidgetData: Hashable {
         return "\(valueText) \(word)"
     }
 
-    /// A soonest-expiry inside this window flips the row to a warning state (the ⚠ triangle next to the
-    /// count) — a reset credit you're about to lose if you don't use it.
-    static let expiryWarningWindow: TimeInterval = 24 * 60 * 60
+    /// Color bands for reset-credit expiries: blue normally, amber under a week, red under 48 hours.
+    /// A past-due expiry remains critical until the next refresh drops it from the available list.
+    static let expiryWarningWindow: TimeInterval = 7 * 24 * 60 * 60
+    static let expiryCriticalWindow: TimeInterval = 48 * 60 * 60
 
-    /// True when the soonest still-available reset credit expires within `expiryWarningWindow` (a past-due
-    /// one counts too). Drives the row's warning triangle; recomputes on the popover's 30s tick because
+    /// Visual status for rows carrying reset-credit expiries. Recomputes on the popover's 30s tick because
     /// the row keeps ticking while it carries expiries.
-    var hasImminentExpiry: Bool {
-        guard hasData, let soonest = expiriesAt.min() else { return false }
-        return soonest.timeIntervalSince(Date()) <= Self.expiryWarningWindow
+    func expirySeverity(now: Date = Date()) -> MeterSeverity? {
+        guard hasData, let soonest = expiriesAt.min() else { return nil }
+        let timeRemaining = soonest.timeIntervalSince(now)
+        if timeRemaining <= Self.expiryCriticalWindow { return .critical }
+        if timeRemaining <= Self.expiryWarningWindow { return .warning }
+        return .normal
     }
 
     /// Hover tooltip for a row carrying expiry instants (the Codex reset-credit row, "2 available"):
@@ -559,9 +568,11 @@ extension WidgetData {
 
     private static let sessionWindowWidgetIDs: Set<String> = [
         "codex.session", "claude.session",
-        // Antigravity's three quota pools are rolling 5-hour windows too: an unused pool reports
+        // Antigravity's two pool meters are rolling 5-hour windows too: an unused pool reports
         // `used == 0` with a reset a full period out, so it gets the same "Not started" treatment.
-        "antigravity.geminiPro", "antigravity.geminiFlash", "antigravity.claude"
+        // The weekly meters deliberately aren't listed — like Claude/Codex, only session windows
+        // read "Not started".
+        "antigravity.geminiPro", "antigravity.claude"
     ]
 
     /// True when the bounded primary row's trailing text is a concrete reset countdown (so the row makes

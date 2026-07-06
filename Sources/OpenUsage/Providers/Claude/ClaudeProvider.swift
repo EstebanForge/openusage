@@ -14,8 +14,9 @@ final class ClaudeProvider: ProviderRuntime {
 
     let authStore: ClaudeAuthStore
     let usageClient: ClaudeUsageClient
-    let ccusageRunner: CcusageRunner
+    let logUsageScanner: ClaudeLogUsageScanner
     let now: @Sendable () -> Date
+    let pricing: @Sendable () async -> ModelPricing
 
     /// Last successful live-usage result and a rate-limit cooldown, carried across refreshes (the provider
     /// is a long-lived singleton). `/api/oauth/usage` rate-limits aggressively, so on a 429 we serve the
@@ -29,13 +30,15 @@ final class ClaudeProvider: ProviderRuntime {
     init(
         authStore: ClaudeAuthStore = ClaudeAuthStore(),
         usageClient: ClaudeUsageClient = ClaudeUsageClient(),
-        ccusageRunner: CcusageRunner = CcusageRunner(),
-        now: @escaping @Sendable () -> Date = Date.init
+        logUsageScanner: ClaudeLogUsageScanner = ClaudeLogUsageScanner(),
+        now: @escaping @Sendable () -> Date = Date.init,
+        pricing: @escaping @Sendable () async -> ModelPricing = { await ModelPricingStore.shared.current() }
     ) {
         self.authStore = authStore
         self.usageClient = usageClient
-        self.ccusageRunner = ccusageRunner
+        self.logUsageScanner = logUsageScanner
         self.now = now
+        self.pricing = pricing
     }
 
     var widgetDescriptors: [WidgetDescriptor] {
@@ -43,15 +46,31 @@ final class ClaudeProvider: ProviderRuntime {
             .percent(id: "claude.session", provider: provider, title: "Session"),
             .percent(id: "claude.weekly", provider: provider, title: "Weekly"),
             .percent(id: "claude.sonnet", provider: provider, title: "Sonnet"),
+            .percent(id: "claude.fable", provider: provider, title: "Fable"),
             .boundedDollars(id: "claude.extra", provider: provider, title: "Extra Usage", metricLabel: "Extra usage spent", limit: 100, valueWord: "spent"),
             .usageTrend(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }
 
+    func hasLocalCredentials() async -> Bool {
+        // Same sources and same usability filter as `refresh()` (see `hasUsableAccessToken`).
+        await loadOffMainActor { [authStore] in authStore.loadCredentialCandidates() }
+            .contains(where: \.hasUsableAccessToken)
+    }
+
     func refresh() async -> ProviderSnapshot {
-        let candidates = await loadOffMainActor { [authStore] in authStore.loadCredentialCandidates() }
-            .filter { $0.oauth.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+        let storedCandidates = await loadOffMainActor { [authStore] in authStore.loadCredentialCandidates() }
+        let candidates = storedCandidates.filter(\.hasUsableAccessToken)
         guard !candidates.isEmpty else {
+            // No CLI credentials anywhere. A login done only in the Claude desktop app is stored in an
+            // Electron-encrypted blob OpenUsage can't read, so a bare "Not logged in" reads as wrong to
+            // a user who is clearly signed in (#825) — point them at the one-time CLI login instead.
+            // Gated on the store finding nothing at all: a stored-but-blank token means the CLI *did*
+            // write credentials, so the plain "Not logged in" is the right guidance there.
+            if storedCandidates.isEmpty, await loadOffMainActor({ [authStore] in authStore.hasDesktopAppData() }) {
+                AppLog.info(LogTag.auth("claude"), "no CLI credentials, but desktop app data found — CLI login needed")
+                return ProviderSnapshot.error(provider: provider, error: ClaudeAuthError.desktopAppOnly)
+            }
             AppLog.info(LogTag.auth("claude"), "no access token, not logged in")
             return ProviderSnapshot.error(provider: provider, error: ClaudeAuthError.notLoggedIn)
         }
@@ -100,12 +119,15 @@ final class ClaudeProvider: ProviderRuntime {
         switch authStore.liveUsageAvailability(state) {
         case .available:
             mapped = try await fetchLiveUsage(state: &state)
+            // A rate-limited fetch rides its "Updates blocked by Anthropic" notice on the mapped usage so
+            // it reaches the header triangle even when the badge/note lines aren't in the user's layout.
+            warning = mapped.warning
         case .missingProfileScope:
             // The login authenticates for inference but lacks the `user:profile` scope the usage endpoint
             // needs (typically a `claude setup-token` token). Don't leave the session/weekly bars silently
             // blank — log it for diagnosis and surface a provider header warning (the amber triangle, like
-            // Z.ai's "no coding plan" notice) telling the user a re-login restores them. The ccusage spend
-            // tiles below are unaffected and still load.
+            // Z.ai's "no coding plan" notice) telling the user a re-login restores them. The local-log
+            // spend tiles below are unaffected and still load.
             AppLog.warn(LogTag.plugin("claude"), "live usage unavailable: credential lacks the user:profile scope (inference-only token); re-login with `claude` to restore session/weekly limits")
             warning = ClaudeUsageMapper.missingProfileScopeWarning
         case .inferenceOnlyToken:
@@ -114,10 +136,20 @@ final class ClaudeProvider: ProviderRuntime {
             break
         }
 
-        await SpendTileMapper.appendCcusageUsage(
-            using: ccusageRunner, provider: .claude, homePath: authStore.claudeHomeOverride(),
-            to: &mapped.lines, now: now()
-        )
+        // Local spend tiles, scanned natively from Claude Code's session logs and priced through the
+        // shared pricing store. `scan` runs on the scanner actor, off the main actor.
+        if let scan = await logUsageScanner.scan(now: now(), pricing: pricing()) {
+            SpendTileMapper.appendTokenUsage(
+                scan.series, to: &mapped.lines, now: now(),
+                unknownModelsByDay: scan.unknownModelsByDay,
+                modelUsage: scan.modelUsage,
+                modelSourceNote: "From your Claude usage history (estimated)"
+            )
+            SpendTileMapper.appendUsageTrend(
+                scan.series, to: &mapped.lines, now: now(),
+                note: "From your Claude usage history (estimated)"
+            )
+        }
 
         MetricLine.appendNoDataIfNeeded(&mapped.lines)
         return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now(), warning: warning)
@@ -169,13 +201,14 @@ final class ClaudeProvider: ProviderRuntime {
 
     /// Last-good usage with an appended staleness note when we have it; otherwise the plain rate-limited
     /// badge (no successful fetch yet this run). `lastGoodUsage` only ever holds a clean `mapUsageResponse`
-    /// result (never a rate-limited snapshot), so the note is never duplicated and no stale ccusage tiles
+    /// result (never a rate-limited snapshot), so the note is never duplicated and no stale spend tiles
     /// ride along — `probe` appends those fresh after this returns.
     private func rateLimitedSnapshot(credentials: ClaudeOAuth, retryAfterSeconds: Int?) -> ClaudeMappedUsage {
         guard var mapped = lastGoodUsage else {
             return ClaudeUsageMapper.rateLimitedUsage(credentials: credentials, retryAfterSeconds: retryAfterSeconds)
         }
         mapped.lines.append(ClaudeUsageMapper.rateLimitedNote(retryAfterSeconds: retryAfterSeconds))
+        mapped.warning = ClaudeUsageMapper.rateLimitedWarning(retryAfterSeconds: retryAfterSeconds)
         return mapped
     }
 

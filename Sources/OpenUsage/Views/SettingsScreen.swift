@@ -21,6 +21,7 @@ struct SettingsScreen: View {
     /// friendly line under the row.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
+    @AppStorage(TotalSpendSetting.key) private var showTotalSpend = true
     @AppStorage(AppearanceSetting.key) private var appearance = AppearanceSetting.system
     @AppStorage(TimeFormatSetting.key) private var timeFormat = TimeFormatSetting.auto
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
@@ -46,10 +47,17 @@ struct SettingsScreen: View {
         @Bindable var store = container.dataStore
         @Bindable var layout = container.layout
         @Bindable var updater = updater
+        @Bindable var transparency = container.transparency
         @Bindable var notifications = container.notificationSettings
         // Same section rhythm as the dashboard and Customize (all read the density setting).
         return VStack(alignment: .leading, spacing: density.sectionSpacing) {
             section("General") {
+                // The dashboard's cross-provider Total Spend card; the card still requires two or
+                // more providers with spend data, so this toggle can't conjure it up alone.
+                row("Show Total Spend") {
+                    Toggle("", isOn: $showTotalSpend)
+                        .settingsSwitchStyle()
+                }
                 row("Launch at Login") {
                     Toggle("", isOn: $launchAtLogin)
                         .settingsSwitchStyle()
@@ -100,6 +108,43 @@ struct SettingsScreen: View {
                 row("Time Format") {
                     picker($timeFormat, options: TimeFormatSetting.allCases, label: \.label)
                 }
+                // Translucent popover the proper way (behind-window vibrancy, text stays legible). It
+                // yields to the system accessibility settings, and to the party easter egg while that's
+                // running (the egg drives the look) — either way, see the paused notice below.
+                row("Increase Transparency") {
+                    Toggle("", isOn: $transparency.increaseTransparency)
+                        .settingsSwitchStyle()
+                        // Party mode owns the look while it's active, so disable (dim) the toggle to show
+                        // it has no effect right now — its stored value resumes once the egg is exited.
+                        .disabled(transparency.secretCodeActive)
+                }
+                // Egg first: while Party runs it overrides the toggle regardless of the system flags, so
+                // its notice takes precedence over the accessibility one.
+                if transparency.secretCodeActive {
+                    pausedNotice("Party mode is on, so this stays paused.")
+                } else if transparency.isPaused {
+                    pausedNotice("macOS Reduce Transparency or Increase Contrast is on, so this stays paused.")
+                }
+                // Both rows surface only after the secret code has been entered. Party Mode is the egg's
+                // own switch: turning it off (like re-typing the code) exits the egg and hides both rows,
+                // dropping back to the base state. Drunk Mode escalates the readable party into the woozy,
+                // barely-readable state and back — turning it off stays in the party (4 → 3), while turning
+                // Party Mode off from there clears Drunk Mode too (4 → base).
+                if transparency.secretCodeActive {
+                    row("Party Mode") {
+                        Toggle("", isOn: $transparency.partyModeActive)
+                            .settingsSwitchStyle()
+                    }
+                    row("Drunk Mode") {
+                        Toggle("", isOn: $transparency.drunkMode)
+                            .settingsSwitchStyle()
+                    }
+                    // The egg yields to the accessibility flags too: when one is on the panel stays
+                    // opaque, so explain why the party looks normal rather than leaving it a mystery.
+                    if transparency.partyPaused {
+                        pausedNotice("macOS Reduce Transparency or Increase Contrast is on, so the party stays paused.")
+                    }
+                }
             }
             section("Usage Display") {
                 row("Show Usage As") {
@@ -117,9 +162,6 @@ struct SettingsScreen: View {
                 }
             }
             notificationsSection
-            #if DEBUG
-            debugNotificationsSection
-            #endif
             section("Privacy") {
                 row("Share Anonymous Usage") {
                     Toggle("", isOn: Binding(
@@ -164,6 +206,13 @@ struct SettingsScreen: View {
                     .padding(.vertical, density.controlRowPadding)
                 }
             }
+            // Mirror of the Customize cross-link — the layout controls live on the other screen.
+            ScreenCrossLinkRow(
+                systemImage: "slider.horizontal.3",
+                title: "Customize",
+                subtitle: "Choose what's visible and where",
+                destination: .customize
+            )
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -278,46 +327,6 @@ struct SettingsScreen: View {
         }
     }
 
-    #if DEBUG
-    /// Temporary debug buttons that post real quota notifications so the copy, stacking, and permission
-    /// flow can be verified on demand without waiting for a real worsening. DEBUG-only — never in a
-    /// release build. Remove once notification behavior is confirmed.
-    private var debugNotificationsSection: some View {
-        section("Debug") {
-            row("Almost Out") {
-                Button("Fire") { fire(.underTenPercent) }.buttonStyle(.bordered)
-            }
-            row("Cutting It Close") {
-                Button("Fire") { fire(.healthyToClose) }.buttonStyle(.bordered)
-            }
-            row("Will Run Out") {
-                Button("Fire") { fire(.closeToRunningOut) }.buttonStyle(.bordered)
-            }
-            row("All Three") {
-                Button("Fire") {
-                    fire(.underTenPercent)
-                    fire(.healthyToClose)
-                    fire(.closeToRunningOut)
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-    }
-
-    /// Post one real notification for a milestone so the banner title/subtitle/body and stacking can be
-    /// checked directly. Bypasses the dedup/prime logic — a manual trigger for testing only.
-    private func fire(_ milestone: PaceMilestone) {
-        Task {
-            _ = await AppNotifications.shared.post(
-                idPrefix: "debug.\(milestone.rawValue)",
-                title: milestone.notificationTitle,
-                subtitle: "Claude Session",
-                body: milestone.body
-            )
-        }
-    }
-    #endif
-
     // MARK: - Advanced (logging)
 
     /// Log-level control plus copy/reveal buttons for the file log. The file lives at a fixed path
@@ -402,6 +411,18 @@ struct SettingsScreen: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, density.controlRowPadding)
+    }
+
+    /// An inline "this setting is paused" caption under a row — the same orange notice idiom as the
+    /// General section's error line. Used for the Increase Transparency row (paused by a system
+    /// accessibility setting, or by Party mode taking over the look).
+    private func pausedNotice(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(Theme.notice)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// A trailing popup picker that hugs its selection — segmented controls don't fit the 320pt

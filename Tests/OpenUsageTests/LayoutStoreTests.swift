@@ -610,7 +610,7 @@ final class LayoutStoreTests: XCTestCase {
         let store = LayoutStore(registry: registry, defaults: makeDefaults("FreshCustomizeOrder"), storageKey: "layout")
 
         XCTAssertEqual(store.orderedSupportedMetrics(for: "claude").map(\.id), [
-            "claude.session", "claude.weekly", "claude.sonnet", "claude.extra",
+            "claude.session", "claude.weekly", "claude.sonnet", "claude.fable", "claude.extra",
             "claude.trend", "claude.today", "claude.yesterday", "claude.last30"
         ])
         XCTAssertEqual(store.orderedSupportedMetrics(for: "codex").map(\.id), [
@@ -622,7 +622,7 @@ final class LayoutStoreTests: XCTestCase {
             "devin.daily", "devin.weekly", "devin.extra"
         ])
         XCTAssertEqual(store.orderedSupportedMetrics(for: "grok").map(\.id), [
-            "grok.creditsUsed", "grok.payAsYouGo",
+            "grok.weekly", "grok.payAsYouGo",
             "grok.trend", "grok.today", "grok.yesterday", "grok.last30"
         ])
         // Cursor's spend tiles + usage trend are enabled, so they trail the live meters in declaration order.
@@ -648,7 +648,7 @@ final class LayoutStoreTests: XCTestCase {
             "codex.session", "codex.weekly", "codex.spark", "codex.sparkWeekly", "codex.trend",
             "codex.credits", "codex.rateLimitResets", "codex.today", "codex.yesterday", "codex.last30",
             "devin.daily", "devin.weekly", "devin.extra",
-            "grok.creditsUsed", "grok.trend",
+            "grok.weekly", "grok.trend",
             "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
             // Cursor spend tiles + usage trend are enabled, joining its live meters in the default layout.
             "cursor.usage", "cursor.auto", "cursor.api", "cursor.trend",
@@ -668,7 +668,7 @@ final class LayoutStoreTests: XCTestCase {
         // Claude's core meters (Session, Weekly, Extra, Usage Trend) stay primary; spend-history rows
         // go below the caret — the same "core above, history below" shape as the other providers.
         XCTAssertEqual(primaryByProvider["claude"], ["claude.session", "claude.weekly", "claude.extra", "claude.trend"])
-        XCTAssertEqual(expandedByProvider["claude"], ["claude.sonnet", "claude.today", "claude.yesterday", "claude.last30"])
+        XCTAssertEqual(expandedByProvider["claude"], ["claude.sonnet", "claude.fable", "claude.today", "claude.yesterday", "claude.last30"])
         XCTAssertEqual(primaryByProvider["codex"], ["codex.session", "codex.weekly", "codex.trend"])
         // Spark (the optional model-specific limits) leads the expanded section, before credits.
         XCTAssertEqual(expandedByProvider["codex"], [
@@ -677,7 +677,7 @@ final class LayoutStoreTests: XCTestCase {
         ])
         XCTAssertEqual(primaryByProvider["devin"], ["devin.daily", "devin.weekly"])
         XCTAssertEqual(expandedByProvider["devin"], ["devin.extra"])
-        XCTAssertEqual(primaryByProvider["grok"], ["grok.creditsUsed", "grok.trend"])
+        XCTAssertEqual(primaryByProvider["grok"], ["grok.weekly", "grok.trend"])
         XCTAssertEqual(expandedByProvider["grok"], [
             "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30"
         ])

@@ -178,6 +178,12 @@ final class WidgetDataStore {
             guard data.isBounded else { continue }
             let state = data.meterState(now: now)
             let previous = notificationState[key] ?? NotificationState()
+            let currentBucket = PaceNotificationLogic.bucket(for: state)
+            let resetDelta = Self.resetDelta(current: data.resetsAt, previous: previous.resetsAt)
+            let resetAdvanced = PaceNotificationLogic.resetWindowAdvanced(
+                resetsAt: data.resetsAt,
+                previousReset: previous.resetsAt
+            )
             let result = PaceNotificationLogic.transitions(
                 state: state,
                 fraction: data.remainingFraction,
@@ -185,6 +191,9 @@ final class WidgetDataStore {
                 previous: previous,
                 toggles: toggles
             )
+            if !result.fire.isEmpty || resetAdvanced || Self.isPositiveResetMovement(resetDelta) {
+                AppLog.debug(.notifications, "decision \(key): metric=\(data.title) state=\(Self.notificationStateDescription(state)) bucket=\(Self.bucketDescription(currentBucket)) previousBucket=\(Self.bucketDescription(previous.previousBucket)) remaining=\(Self.percentDescription(data.remainingFraction)) reset=\(Self.dateDescription(data.resetsAt)) previousReset=\(Self.dateDescription(previous.resetsAt)) resetDelta=\(Self.resetDeltaDescription(resetDelta)) resetReason=\(Self.resetReasonDescription(delta: resetDelta, advanced: resetAdvanced)) primed=\(previous.primed) wasUnderTen=\(previous.wasUnderTenPercent) firedBefore=\(Self.milestoneDescription(previous.firedMilestones)) fire=\(Self.milestoneDescription(result.fire)) newBucket=\(Self.bucketDescription(result.newState.previousBucket)) newFired=\(Self.milestoneDescription(result.newState.firedMilestones)) toggles=\(Self.toggleDescription(toggles))")
+            }
             // Deliver each fired milestone, then commit dedup state only for the ones that actually
             // delivered. The logic doesn't mark milestones fired — that's done here, after delivery
             // succeeds, so a skipped/failed delivery (not authorized, or `add` errored) leaves the
@@ -206,6 +215,9 @@ final class WidgetDataStore {
             if result.fire.contains(.underTenPercent) && !underDelivered {
                 next.wasUnderTenPercent = previous.wasUnderTenPercent
             }
+            if !result.fire.isEmpty {
+                AppLog.debug(.notifications, "commit \(key): paceDelivered=\(paceDelivered) underTenDelivered=\(underDelivered) persistedBucket=\(Self.bucketDescription(next.previousBucket)) persistedWasUnderTen=\(next.wasUnderTenPercent) persistedFired=\(Self.milestoneDescription(next.firedMilestones))")
+            }
             nextState[key] = next
         }
         notificationState = nextState
@@ -224,6 +236,77 @@ final class WidgetDataStore {
             subtitle,
             milestone.body
         )
+    }
+
+    // MARK: - Notification decision trace helpers (debug logging only)
+
+    private static func resetDelta(current: Date?, previous: Date?) -> TimeInterval? {
+        guard let current, let previous else { return nil }
+        return current.timeIntervalSince(previous)
+    }
+
+    private static func isPositiveResetMovement(_ delta: TimeInterval?) -> Bool {
+        guard let delta else { return false }
+        return delta > 0
+    }
+
+    private static func resetReasonDescription(delta: TimeInterval?, advanced: Bool) -> String {
+        guard let delta else { return "firstOrMissingReset" }
+        if advanced { return "advanced" }
+        if delta > 0 { return "ignoredJitter" }
+        if delta < 0 { return "movedEarlier" }
+        return "unchanged"
+    }
+
+    private static func resetDeltaDescription(_ delta: TimeInterval?) -> String {
+        guard let delta else { return "nil" }
+        return String(format: "%.3fs", delta)
+    }
+
+    private static func dateDescription(_ date: Date?) -> String {
+        date.map { OpenUsageISO8601.string(from: $0) } ?? "nil"
+    }
+
+    private static func percentDescription(_ value: Double) -> String {
+        String(format: "%.1f%%", value * 100)
+    }
+
+    private static func toggleDescription(_ toggles: PaceNotificationToggles) -> String {
+        "under10=\(toggles.underTenPercent),close=\(toggles.healthyToClose),runOut=\(toggles.closeToRunningOut)"
+    }
+
+    private static func milestoneDescription(_ milestones: Set<PaceMilestone>) -> String {
+        milestoneDescription(milestones.sorted { $0.rawValue < $1.rawValue })
+    }
+
+    private static func milestoneDescription(_ milestones: [PaceMilestone]) -> String {
+        guard !milestones.isEmpty else { return "[]" }
+        return "[" + milestones.map(\.rawValue).joined(separator: ",") + "]"
+    }
+
+    private static func bucketDescription(_ bucket: PaceBucket) -> String {
+        switch bucket {
+        case .untracked: return "untracked"
+        case .healthy: return "healthy"
+        case .close: return "close"
+        case .runningOut: return "runningOut"
+        }
+    }
+
+    private static func notificationStateDescription(_ state: WidgetData.MeterState) -> String {
+        switch state {
+        case .noData: return "noData"
+        case .spent: return "spent"
+        case .runningOut: return "runningOut"
+        case .closeToLimit: return "closeToLimit"
+        case .healthy: return "healthy"
+        case .level(let severity):
+            switch severity {
+            case .normal: return "level.normal"
+            case .warning: return "level.warning"
+            case .critical: return "level.critical"
+            }
+        }
     }
 
     /// What a single provider's refresh actually did this pass, so `refreshAll` can summarize the batch
@@ -432,7 +515,7 @@ final class WidgetDataStore {
             )
         case .text(_, let value, _, _):
             return resolveText(value, descriptor: descriptor)
-        case .values(_, let values, _, let expiriesAt, let unknownModels):
+        case .values(_, let values, _, let expiriesAt, let unknownModels, let modelBreakdown):
             // The number is carried raw — no regex re-parse. Presentation (title, icon, selection,
             // trailing word) comes from the descriptor's sample; the live numbers come from the line.
             var data = descriptor.sample
@@ -448,13 +531,14 @@ final class WidgetDataStore {
             // Unknown-model names (Cursor spend tiles): drive the label warning triangle whose hover lists
             // the models this period used that the pricing manifest can't price, so the cost is incomplete.
             data.unknownModels = unknownModels
-            // A tile whose selection finds no value (e.g. a cost-only tile on a day ccusage couldn't
+            data.modelBreakdown = modelBreakdown
+            // A tile whose selection finds no value (e.g. a cost-only tile on a day the scanner couldn't
             // price) has nothing real to show — render "No data" rather than a misleading $0.00 / 0.
             data.hasData = !data.selectedValues.isEmpty
             // The ⓘ is data-driven: it shows when a *shown* value is locally estimated (a spend row's
             // dollars) and stays off for a measured one (its tokens), so the tokens-only tile reads clean.
             data.infoNote = data.selectedValues.contains(where: \.estimated)
-                ? WidgetData.ccusageEstimateNote
+                ? WidgetData.localEstimateNote
                 : descriptor.sample.infoNote
             return data
         case .badge(_, let text, _, let subtitle):

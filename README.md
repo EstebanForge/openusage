@@ -5,7 +5,7 @@ Track your AI coding subscriptions from the macOS menu bar — native Swift edit
 OpenUsage shows how much of your AI coding plans you've used: session and weekly limits, credits, and spend, all in one popover. Pin your most important metrics straight into the menu bar.
 
 <p align="center">
-  <img src="assets/screenshot.jpg" alt="OpenUsage menu bar tracker showing Claude and Codex session, weekly, and spend usage" width="900">
+  <img src="assets/screenshot.jpg?v=20260706" alt="OpenUsage menu bar tracker showing Claude and Codex session, weekly, and spend usage" width="900">
 </p>
 
 ## Installation
@@ -22,9 +22,9 @@ Either way, the app updates itself in place via signed, notarized [Sparkle](docs
 
 ## Supported Providers
 
-- **[Antigravity](docs/providers/antigravity.md)** — Gemini Pro/Flash and Claude model quotas
-- **[Claude](docs/providers/claude.md)** — session, weekly, Sonnet, extra usage, local daily spend (ccusage)
-- **[Codex](docs/providers/codex.md)** — session, weekly, credits, local daily spend (ccusage)
+- **[Antigravity](docs/providers/antigravity.md)** — shared Gemini and Claude pool quotas, 5-hour and weekly windows
+- **[Claude](docs/providers/claude.md)** — session, weekly, Sonnet, extra usage, local daily spend
+- **[Codex](docs/providers/codex.md)** — session, weekly, credits, local daily spend
 - **[Cursor](docs/providers/cursor.md)** — credits, total/auto/API usage, requests, on-demand, per-day spend
 - **[Devin](docs/providers/devin.md)** — weekly and daily quota, extra usage balance
 - **[Grok](docs/providers/grok.md)** — credits used, pay-as-you-go
@@ -57,7 +57,8 @@ For working on the code, see the developer docs: [architecture](docs/architectur
 
 - macOS 15 (Sequoia) or later
 - Universal binary — runs natively on both Apple Silicon and Intel Macs
-- A JavaScript package runner — optional, only for the local Today / Yesterday / Last 30 Days spend tiles (which run `ccusage`). [Bun](https://bun.sh) is preferred (`bunx`), but `pnpm dlx`, `yarn dlx`, `npm exec`, or `npx` work too — so an existing Node.js install is enough.
+
+The local Today / Yesterday / Last 30 Days spend tiles are computed natively by reading each CLI's local logs — no Node.js or other runtime needed. Dollars are estimated with [dynamically refreshed model pricing](docs/pricing.md).
 
 
 

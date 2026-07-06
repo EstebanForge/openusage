@@ -14,19 +14,22 @@ final class CodexProvider: ProviderRuntime {
 
     let authStore: CodexAuthStore
     let usageClient: CodexUsageClient
-    let ccusageRunner: CcusageRunner
+    let logUsageScanner: CodexLogUsageScanner
     let now: @Sendable () -> Date
+    let pricing: @Sendable () async -> ModelPricing
 
     init(
         authStore: CodexAuthStore = CodexAuthStore(),
         usageClient: CodexUsageClient = CodexUsageClient(),
-        ccusageRunner: CcusageRunner = CcusageRunner(),
-        now: @escaping @Sendable () -> Date = Date.init
+        logUsageScanner: CodexLogUsageScanner = CodexLogUsageScanner(),
+        now: @escaping @Sendable () -> Date = Date.init,
+        pricing: @escaping @Sendable () async -> ModelPricing = { await ModelPricingStore.shared.current() }
     ) {
         self.authStore = authStore
         self.usageClient = usageClient
-        self.ccusageRunner = ccusageRunner
+        self.logUsageScanner = logUsageScanner
         self.now = now
+        self.pricing = pricing
     }
 
     var widgetDescriptors: [WidgetDescriptor] {
@@ -42,6 +45,18 @@ final class CodexProvider: ProviderRuntime {
             .values(id: "codex.rateLimitResets", provider: provider, title: "Rate Limit Resets", metricLabel: "Rate Limit Resets"),
             .usageTrend(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
+    }
+
+    func hasLocalCredentials() async -> Bool {
+        // Same sources as `refresh()`: auth.json candidates first, keychain as the fallback. Only a
+        // usable access token counts (see `hasUsableAccessToken`) — an API-key-only auth.json can't
+        // serve the usage API, so seeding it on would just show an error row.
+        let (fileCandidates, _) = authStore.loadAuthCandidates()
+        if fileCandidates.contains(where: \.hasUsableAccessToken) {
+            return true
+        }
+        let keychain = await loadOffMainActor { [authStore] in authStore.loadKeychainAuth() }
+        return keychain?.hasUsableAccessToken == true
     }
 
     func refresh() async -> ProviderSnapshot {
@@ -109,10 +124,20 @@ final class CodexProvider: ProviderRuntime {
         )
         var mapped = try CodexUsageMapper.mapUsageResponse(response, resetCredits: resetCredits, now: now())
 
-        await SpendTileMapper.appendCcusageUsage(
-            using: ccusageRunner, provider: .codex, homePath: authStore.codexHome(),
-            to: &mapped.lines, now: now()
-        )
+        // Local spend tiles, scanned natively from the Codex CLI's session rollouts and priced
+        // through the shared pricing store. `scan` runs on the scanner actor, off the main actor.
+        if let scan = await logUsageScanner.scan(now: now(), pricing: pricing()) {
+            SpendTileMapper.appendTokenUsage(
+                scan.series, to: &mapped.lines, now: now(),
+                unknownModelsByDay: scan.unknownModelsByDay,
+                modelUsage: scan.modelUsage,
+                modelSourceNote: "From your Codex logs (estimated)"
+            )
+            SpendTileMapper.appendUsageTrend(
+                scan.series, to: &mapped.lines, now: now(),
+                note: "From your Codex logs (estimated)"
+            )
+        }
 
         MetricLine.appendNoDataIfNeeded(&mapped.lines)
         return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now())

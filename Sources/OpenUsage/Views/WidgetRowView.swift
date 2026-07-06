@@ -26,6 +26,10 @@ struct WidgetRowView: View {
     var condensedTop: Bool = false
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
+    @State private var modelHover = ModelHoverState()
+    /// Party easter egg: fill meter bars with the party gradient instead of the severity color. Off by
+    /// default everywhere else.
+    @Environment(\.popoverPartyMode) private var partyMode
 
     /// Both row fonts come from the density setting: point sizes — not just padding — are what make
     /// Compact read as a denser mode. The sizes are explicit because semantic
@@ -254,12 +258,18 @@ struct WidgetRowView: View {
     /// Unbounded: no bar. Label on the left, with a single right-aligned descriptive line ("1,503 left")
     /// and an optional secondary line ("on-device estimate") beneath it.
     private var unboundedRow: some View {
+        unboundedRowContent
+            .onChange(of: data.modelBreakdown) { _, _ in modelHover.dismiss() }
+            .onDisappear { modelHover.dismiss() }
+    }
+
+    private var unboundedRowContent: some View {
         HStack(alignment: .center, spacing: 10) {
             labelColumn
             Spacer(minLength: 12)
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: 4) {
-                    expiryWarningIcon
+                    expiryStatusDot
                     Text(data.unboundedDetail)
                         .font(supportingFont)
                         .foregroundStyle(.primary) // the value is the row's payload — match the bounded headline
@@ -269,8 +279,11 @@ struct WidgetRowView: View {
                         // Hover target is the value text itself, not the whole row — the same
                         // per-element pattern the bounded row uses for "x left" and "Resets in …". Reveals
                         // the exact figures the compact value shortens, or "No usage in this period" on a
-                        // zero row; nil (no tooltip) on a small, already-full, non-zero row.
-                        .hoverTooltip(data.unboundedValueTooltip)
+                        // zero row; nil (no tooltip) on a small, already-full, non-zero row. Suppressed
+                        // when the model-breakdown popover is wired up — a text bubble and a popover
+                        // fighting over the same hover reads as two competing surfaces, and the panel's
+                        // per-model tooltips carry the exact figures instead.
+                        .hoverTooltip(data.hasModelBreakdown ? nil : data.unboundedValueTooltip)
                 }
                 if let subtitle = data.unboundedSubtitle {
                     // Secondary, not tertiary: the subtitle is informational ("on-device estimate"),
@@ -282,20 +295,59 @@ struct WidgetRowView: View {
                 }
             }
             .multilineTextAlignment(.trailing)
+            // Both the hover trigger and the popover anchor live on the value column, not the whole
+            // row: hovering the label (or empty gap) shouldn't reveal the breakdown — only the figure
+            // it explains should — and the arrow then centers on that figure, matching the trend
+            // popover's anchoring off the sparkline strip.
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                guard data.hasModelBreakdown else {
+                    modelHover.dismiss()
+                    return
+                }
+                if case .active = phase {
+                    modelHover.inlineHover(true)
+                } else {
+                    modelHover.inlineHover(false)
+                }
+            }
+            .popover(
+                isPresented: Binding(
+                    get: { data.hasModelBreakdown && modelHover.isPresented },
+                    // A click-outside dismiss removes the detail view without an `.ended` hover event,
+                    // so a plain assignment would strand `overDetail == true` and block future hides.
+                    set: { if !$0 { modelHover.dismiss() } }
+                ),
+                arrowEdge: .top
+            ) {
+                if let breakdown = data.modelBreakdown {
+                    ModelUsageDetail(title: data.title, breakdown: breakdown) { inside in
+                        modelHover.detailHover(inside)
+                    }
+                }
+            }
         }
     }
 
-    /// Amber warning triangle shown just before the value when a reset credit is about to expire
-    /// (`hasImminentExpiry`). Carries the same expiry tooltip as the value, so hovering it reveals which
-    /// credits are expiring and when. Renders nothing otherwise.
+    /// Small blue/yellow/red status dot shown just before the value when the row carries reset-credit
+    /// expiries. Carries the same expiry tooltip as the value, so hovering it reveals which credits are
+    /// expiring and when. Renders nothing otherwise.
     @ViewBuilder
-    private var expiryWarningIcon: some View {
-        if data.hasImminentExpiry {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: density.supportingPointSize - 1))
-                .foregroundStyle(severityColor(.warning))
+    private var expiryStatusDot: some View {
+        if let severity = data.expirySeverity() {
+            Circle()
+                .fill(severityColor(severity))
+                .frame(width: 6, height: 6)
                 .hoverTooltip(data.unboundedValueTooltip)
-                .accessibilityLabel("A reset credit is expiring soon")
+                .accessibilityLabel(expiryStatusAccessibilityLabel(severity))
+        }
+    }
+
+    private func expiryStatusAccessibilityLabel(_ severity: WidgetData.MeterSeverity) -> String {
+        switch severity {
+        case .normal: return "Reset credits expire in more than 7 days"
+        case .warning: return "A reset credit expires within 7 days"
+        case .critical: return "A reset credit expires within 48 hours"
         }
     }
 
@@ -348,7 +400,7 @@ struct WidgetRowView: View {
                 // on glass and adapts to Increase Contrast / Reduce Transparency.
                 Capsule().fill(.quaternary)
                 Capsule()
-                    .fill(severityColor(state.severity))
+                    .fill(partyMode ? PartyMode.meterFill : severityColor(state.severity))
                     .frame(width: fillWidth(track: proxy.size.width))
             }
             .overlay(alignment: .leading) {
