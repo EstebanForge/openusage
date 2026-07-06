@@ -26,6 +26,8 @@ enum DefaultLayout {
         "grok.weekly", "grok.trend",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
 
+        "minimax.session",
+
         "opencode.session", "opencode.weekly", "opencode.monthly", "opencode.trend",
         "opencode.today", "opencode.yesterday", "opencode.last30",
 
@@ -65,6 +67,7 @@ enum DefaultLayout {
         "cursor.auto", "cursor.api",
         "copilot.premium",
         "openrouter.credits",
+        "minimax.session",
         "zai.session", "zai.weekly"
     ]
 
