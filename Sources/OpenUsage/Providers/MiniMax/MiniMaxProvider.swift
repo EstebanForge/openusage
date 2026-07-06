@@ -32,6 +32,14 @@ final class MiniMaxProvider: ProviderRuntime {
         }
     }
 
+    func hasLocalCredentials() async -> Bool {
+        // Same sources as `refresh()`: an env-exported key for either endpoint. Mirror
+        // `endpointOrder()` so a CN-only key (no GLOBAL) still seeds the provider on.
+        await loadOffMainActor { [authStore] in
+            authStore.endpointOrder().contains { authStore.loadApiKey(endpoint: $0) != nil }
+        }
+    }
+
     private func loadAndProbe() async throws -> ProviderSnapshot {
         let endpointOrder = authStore.endpointOrder()
 
