@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.7.4-beta.3
+
+### New Features
+- Replace Codex resets tooltip with a hover popover and highlight the value on hover by @robinebers
+- Add hover highlight on spend-row values so the model breakdown reads as interactive by @claude
+
+### Bug Fixes
+- Always show two units at the day scale in `compactDuration` by @robinebers
+- Collapse imminent resets to “soon” and gate the popover on real data by @robinebers
+- Distinguish zero resets from unfetched expiries in the Codex resets popover by @robinebers
+- Clear the value highlight when the panel closes by tracking hover on the coordinator by @claude
+- Remove the legacy Tauri autostart LaunchAgent on launch by @claude
+- Single-instance decisions must not trust the LaunchServices snapshot ([#874](https://github.com/robinebers/openusage/pull/874)) by @xuing
+- Center the Total Spend share arrow like the provider header icons by @robinebers
+
+### Refactor
+- Extract `PanelHeightCoordinator` from `DashboardView` (auto-fit computation) by @robinebers
+- Extract `StatusItemImageUpdater` from `StatusItemController` by @robinebers
+- Extract `QuotaNotificationEvaluator` from `WidgetDataStore` by @robinebers
+- Extract `PopoverNavigationStore` and generic `TransientNotice` from `LayoutStore` by @robinebers
+- DRY / dead-code / KISS cleanup from code-quality audit by @robinebers
+
+### Chores
+- Address review findings (clamp coverage, image updater, navigation, dedup docs, pill shadow, tests) by @claude
+- Update README screenshot and version query on screenshot URL by @robinebers
+- Fix Pages deploy recovery in release skill to use `main` ref by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.4-beta.2...v0.7.4-beta.3](https://github.com/robinebers/openusage/compare/v0.7.4-beta.2...v0.7.4-beta.3)
+
+- [0506f02](https://github.com/robinebers/openusage/commit/0506f02d00abee909ba50028cbe8679df67eff75) Always show two units at the day scale in compactDuration by @robinebers
+- [417900f1](https://github.com/robinebers/openusage/commit/417900f1cf27586895a6de13a775c3511f8678ce) Collapse imminent resets to "soon" and gate the popover on real data by @robinebers
+- [5f42ee9c](https://github.com/robinebers/openusage/commit/5f42ee9c2eb59a980ccfaeb3de4a89b02a1682d9) Distinguish zero resets from unfetched expiries in the popover by @robinebers
+- [cbe303ec](https://github.com/robinebers/openusage/commit/cbe303ec5ddf3437b20506de25da6ace39cc20cd) Replace Codex resets tooltip with a hover popover and light its value by @robinebers
+- [dd53cbed](https://github.com/robinebers/openusage/commit/dd53cbed89358d4c3ad1e8bee23ebae3368121c4) Clear the value highlight on panel close by tracking hover on the coordinator by @claude
+- [71a6ba00](https://github.com/robinebers/openusage/commit/71a6ba00c0f3a025c0028b51748b1cf2dc0a7ab6) Add hover highlight to spend-row value so the model breakdown reads as interactive by @claude
+- [9cf0c62d](https://github.com/robinebers/openusage/commit/9cf0c62de4396c3bab2ce23ccb35062b796afd08) Address review findings: real clamp coverage, private clamped, honest imports by @claude
+- [84879dd4](https://github.com/robinebers/openusage/commit/84879dd4704e2974b2cbf4e1aa44f1f6e77afe5a) Address review findings: non-optional image updater, fix stale doc reference by @claude
+- [43241b41](https://github.com/robinebers/openusage/commit/43241b411486bf29285429764febd27e63edade1) Address review findings: fix stale dedup doc, note the snapshot delta by @claude
+- [7f1af892](https://github.com/robinebers/openusage/commit/7f1af892eab1f001ea72e82dec9825cc558e8b89) Address review findings: private navigation, naming, stale doc, notice tests by @claude
+- [7cc1f25e](https://github.com/robinebers/openusage/commit/7cc1f25e9496dd274ba6e19d08d1c8a001030ef9) Address review findings: pill shadow drift, test pins, Cursor facts adoption by @claude
+- [dff6786e](https://github.com/robinebers/openusage/commit/dff6786e907b0f9d0d07101b339cb1899c6a728e) fix: remove the legacy Tauri autostart LaunchAgent on launch by @claude
+- [ea51bdf7](https://github.com/robinebers/openusage/commit/ea51bdf7b038fbe81039a43cf109edaf8faa6565) fix: single-instance decisions must not trust the LaunchServices snapshot (#874) by @xuing
+- [f0baad20](https://github.com/robinebers/openusage/commit/f0baad20a936252b2c21a075db7b75c4f224783e) refactor(DashboardView): extract PanelHeightCoordinator (auto-fit computation) by @robinebers
+- [c4c59712](https://github.com/robinebers/openusage/commit/c4c59712692ed0296fd25f810a3d741995abf70d) refactor(StatusItemController): extract StatusItemImageUpdater by @robinebers
+- [89ee82ec](https://github.com/robinebers/openusage/commit/89ee82ecfa9e7defa6ded0e7ce3d6f0e748acb29) refactor(WidgetDataStore): extract QuotaNotificationEvaluator by @robinebers
+- [75971560](https://github.com/robinebers/openusage/commit/75971560e962636822fd7cdcd8ae553ab8670d24) refactor(LayoutStore): extract PopoverNavigationStore + generic TransientNotice by @robinebers
+- [667f350a](https://github.com/robinebers/openusage/commit/667f350a1499514451e5eb131fd5cbecdda4d8b8) refactor: DRY/dead-code/KISS cleanup from code-quality audit by @robinebers
+- [4d755626](https://github.com/robinebers/openusage/commit/4d7556269013cf5c9c76216caf2e6fd008dff742) Add version query to screenshot URL in README by @robinebers
+- [a26a1130](https://github.com/robinebers/openusage/commit/a26a113081799fd010cc00f5aeaa79a0bf8eb014) docs: update README screenshot by @robinebers
+- [ba04c54f](https://github.com/robinebers/openusage/commit/ba04c54f68215a42a370e0a302f71a416421d0f1) docs(skills): fix Pages deploy recovery to use main ref by @robinebers
+- [3686abc1](https://github.com/robinebers/openusage/commit/3686abc136db12f236ab66898c7026d51cd655f3) fix(ui): center the Total Spend share arrow like the provider header icons by @robinebers
+
 ## v0.7.4-beta.2
 
 ### Bug Fixes
