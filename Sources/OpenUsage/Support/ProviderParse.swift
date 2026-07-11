@@ -18,9 +18,12 @@ enum ProviderParse {
         }
     }
 
-    /// Permissive numeric read: accepts JSON numbers and numeric strings, rejecting non-finite values.
+    /// Permissive numeric read: accepts JSON numbers and numeric strings, rejecting booleans and
+    /// non-finite values. `JSONSerialization` bridges booleans through `NSNumber`, so the Core
+    /// Foundation type check is required to keep `true`/`false` from becoming `1`/`0`.
     static func number(_ value: Any?) -> Double? {
         if let number = value as? NSNumber {
+            guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
             let doubleValue = number.doubleValue
             return doubleValue.isFinite ? doubleValue : nil
         }

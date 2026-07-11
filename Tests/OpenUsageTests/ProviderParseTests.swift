@@ -10,4 +10,18 @@ final class ProviderParseTests: XCTestCase {
         )
         XCTAssertEqual("café".urlFormEncoded, "caf%C3%A9")
     }
+
+    func testNumberDistinguishesJSONBooleansFromNumbers() throws {
+        let object = try XCTUnwrap(ProviderParse.jsonObject(Data(
+            #"{"true":true,"false":false,"one":1,"zero":0,"decimal":1.5,"string":" 2.5 "}"#.utf8
+        )))
+
+        XCTAssertNil(ProviderParse.number(object["true"]))
+        XCTAssertNil(ProviderParse.number(object["false"]))
+        XCTAssertEqual(ProviderParse.number(object["one"]), 1)
+        XCTAssertEqual(ProviderParse.number(object["zero"]), 0)
+        XCTAssertEqual(ProviderParse.number(object["decimal"]), 1.5)
+        XCTAssertEqual(ProviderParse.number(object["string"]), 2.5)
+        XCTAssertEqual(ProviderParse.bool(object["true"]), true)
+    }
 }
