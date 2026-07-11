@@ -62,8 +62,12 @@ final class ZAIProvider: ProviderRuntime {
             if ZAIUsageMapper.isNoCodingPlan(body) {
                 return ProviderSnapshot.error(provider: provider, error: ZAIUsageError.noCodingPlan)
             }
-            let mapped = ZAIUsageMapper.map(quotaBody: body, subscriptionBody: subscription)
-            return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now())
+            do {
+                let mapped = try ZAIUsageMapper.map(quotaBody: body, subscriptionBody: subscription)
+                return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now())
+            } catch {
+                return ProviderSnapshot.error(provider: provider, error: error)
+            }
         case .authFailure:
             return ProviderSnapshot.error(provider: provider, error: ZAIAuthError.invalidKey)
         case .failed(let error):
