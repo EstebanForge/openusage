@@ -1,0 +1,108 @@
+import XCTest
+@testable import OpenUsage
+
+/// End-to-end provider behavior: detection via the Go auth key or local usage, and a refresh that yields
+/// the Go meters + combined spend tiles + trend, plus the not-logged-in path.
+@MainActor
+final class OpenCodeProviderTests: XCTestCase {
+    private func d(_ iso: String) -> Date { OpenUsageISO8601.date(from: iso)! }
+    private func epochMs(_ iso: String) -> Int { Int(d(iso).timeIntervalSince1970 * 1000) }
+    private func row(_ iso: String, _ cost: String, _ tokens: Int, _ model: String, _ provider: String) -> String {
+        "[\(epochMs(iso)),\(cost),\(tokens),\"\(model)\",\"\(provider)\"]"
+    }
+    private let authJSON = #"{"opencode-go":{"type":"api","key":"sk-test"}}"#
+
+    private func authStore(files: FakeFiles) -> OpenCodeAuthStore {
+        OpenCodeAuthStore(
+            files: files,
+            environment: FakeEnvironment(["OPENCODE_DATA_DIR": "/oc"]),
+            homeDirectory: { URL(fileURLWithPath: "/nonexistent") }
+        )
+    }
+
+    func testHasLocalCredentialsViaGoAuthKey() async {
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": authJSON])),
+            usageScanner: OpenCodeUsageScanner(sqlite: StubSQLite(), databasePaths: { [] })
+        )
+        let has = await provider.hasLocalCredentials()
+        XCTAssertTrue(has)
+    }
+
+    func testHasLocalCredentialsViaLocalUsage() async {
+        let db = "[" + row("2026-07-12T10:00:00.000Z", "1.0", 500, "gpt-5.5", "opencode") + "]"
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles()),
+            usageScanner: OpenCodeUsageScanner(
+                sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
+                databasePaths: { ["/oc/opencode.db"] }
+            )
+        )
+        let has = await provider.hasLocalCredentials()
+        XCTAssertTrue(has)
+    }
+
+    func testHasLocalCredentialsFalseWhenAbsent() async {
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles()),
+            usageScanner: OpenCodeUsageScanner(
+                sqlite: StubSQLite(data: ["/oc/opencode.db": "[]"]),
+                databasePaths: { ["/oc/opencode.db"] }
+            )
+        )
+        let has = await provider.hasLocalCredentials()
+        XCTAssertFalse(has)
+    }
+
+    func testRefreshProducesMetersTilesAndTrend() async {
+        let now = d("2026-07-12T12:00:00.000Z")
+        let db = "[" + [
+            row("2026-07-12T11:00:00.000Z", "2.0", 1000, "glm-5.2", "opencode-go"),
+            row("2026-07-12T10:00:00.000Z", "1.0", 500, "gpt-5.5", "opencode")
+        ].joined(separator: ",") + "]"
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": authJSON])),
+            usageScanner: OpenCodeUsageScanner(
+                sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
+                databasePaths: { ["/oc/opencode.db"] }
+            ),
+            now: { now }
+        )
+        let snapshot = await provider.refresh()
+        XCTAssertEqual(snapshot.plan, "Go")
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertNotNil(snapshot.line(label: "Session"))
+        XCTAssertNotNil(snapshot.line(label: "Weekly"))
+        XCTAssertNotNil(snapshot.line(label: "Monthly"))
+        XCTAssertNotNil(snapshot.line(label: "Usage Trend"))
+        XCTAssertNotNil(snapshot.line(label: "Today"))
+    }
+
+    func testRefreshNotLoggedInWhenNoKeyAndNoDatabase() async {
+        let now = d("2026-07-12T12:00:00.000Z")
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles()),
+            usageScanner: OpenCodeUsageScanner(sqlite: StubSQLite(), databasePaths: { [] }),
+            now: { now }
+        )
+        let snapshot = await provider.refresh()
+        XCTAssertEqual(snapshot.errorCategory, .notLoggedIn)
+    }
+}
+
+private final class StubSQLite: SQLiteAccessing, @unchecked Sendable {
+    var data: [String: String]
+    init(data: [String: String] = [:]) { self.data = data }
+
+    func queryValue(path: String, sql: String) throws -> String? {
+        if sql.contains("json_group_array") { return data[path] }
+        if sql.contains("MIN(time_created)") { return nil }
+        if sql.contains("SELECT 1") {
+            let payload = data[path]
+            return (payload != nil && payload != "[]" && !(payload ?? "").isEmpty) ? "1" : nil
+        }
+        return nil
+    }
+
+    func execute(path: String, sql: String) throws {}
+}
