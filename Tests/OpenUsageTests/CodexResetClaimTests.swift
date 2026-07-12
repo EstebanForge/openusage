@@ -282,6 +282,36 @@ final class CodexResetClaimTests: XCTestCase {
         XCTAssertEqual(consume.headers["Authorization"], "Bearer live-token")
     }
 
+    func testConsumeFallsBackToSameTokenDifferentAccountCandidate() async throws {
+        // ChatGPT-Account-Id changes what a token is authorized for: a same-token candidate with a
+        // different account is a distinct fallback and must not be deduplicated away. The list fetch
+        // authenticates with account A, the consume is rejected for A and must retry with account B —
+        // safe, because both attempts carry the same idempotency key.
+        let http = RoutingHTTPClient { request in
+            switch request.url {
+            case CodexUsageClient.resetCreditsURL:
+                return HTTPResponse(statusCode: 200, headers: [:], body: Self.listBody())
+            case CodexUsageClient.consumeResetCreditURL:
+                return request.headers["ChatGPT-Account-Id"] == "acct-A"
+                    ? HTTPResponse(statusCode: 403, headers: [:], body: Data())
+                    : HTTPResponse(statusCode: 200, headers: [:], body: Self.consumeBody(code: "reset"))
+            default:
+                XCTFail("unexpected request: \(request.url)")
+                return HTTPResponse(statusCode: 500, headers: [:], body: Data())
+            }
+        }
+        let service = CodexResetClaimService(
+            usageClient: CodexUsageClient(http: http),
+            credentialCandidates: { [("shared-token", "acct-A"), ("shared-token", "acct-B")] }
+        )
+
+        let outcome = await service.claim(creditExpiringAt: Self.expiry, redeemRequestID: "redeem-1")
+
+        XCTAssertEqual(outcome, .success)
+        let consume = try XCTUnwrap(http.requests.last)
+        XCTAssertEqual(consume.headers["ChatGPT-Account-Id"], "acct-B")
+    }
+
     func testClaimFailsWhenEveryCandidateIsRejected() async {
         let http = RoutingHTTPClient { _ in HTTPResponse(statusCode: 401, headers: [:], body: Data()) }
         let service = CodexResetClaimService(

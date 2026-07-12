@@ -98,8 +98,12 @@ final class CodexResetClaimService {
             case .matched(let id, let authenticated):
                 creditID = id
                 matchedCreditIDs[redeemRequestID] = id
-                // Lead with the credential that just authenticated the list fetch.
-                preferredCandidates = [authenticated] + candidates.filter { $0.accessToken != authenticated.accessToken }
+                // Lead with the credential that just authenticated the list fetch. Deduplicate by the
+                // full (token, account) pair — ChatGPT-Account-Id changes what a token is authorized
+                // for, so a same-token candidate with a different account is a distinct fallback.
+                preferredCandidates = [authenticated] + candidates.filter {
+                    $0.accessToken != authenticated.accessToken || $0.accountID != authenticated.accountID
+                }
             case .noCredit:
                 // Not an error: the credit was claimed elsewhere (CLI/web) or expired since the popover
                 // rendered. The refresh reconciles the timeline with reality.

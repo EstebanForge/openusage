@@ -125,13 +125,18 @@ final class AppContainer {
                 authStore: codex.authStore,
                 usageClient: codex.usageClient,
                 refreshAfterClaim: { [weak dataStore] in
-                    for attempt in 0..<10 {
+                    // The bound must outlast the provider's slowest refresh: usage fetch (10s timeout)
+                    // + token refresh (15s) + usage retry (10s) + reset-credit fetch (10s) ≈ 45s. The
+                    // common race (the periodic timer's probe) clears in a couple of seconds; the
+                    // pathological one keeps the popover's honest "Resetting…" up rather than showing
+                    // a success banner over pre-claim meters.
+                    for attempt in 0..<45 {
                         guard let dataStore else { return }
                         if await dataStore.refresh(providerID: codex.provider.id, force: true) != .skipped {
                             return
                         }
                         AppLog.info(LogTag.plugin("codex"), "post-claim refresh waiting out an in-flight refresh (attempt \(attempt + 1))")
-                        try? await Task.sleep(for: .milliseconds(500))
+                        try? await Task.sleep(for: .seconds(1))
                     }
                     AppLog.error(LogTag.plugin("codex"), "post-claim refresh kept being skipped; meters may lag until the next cycle")
                 }

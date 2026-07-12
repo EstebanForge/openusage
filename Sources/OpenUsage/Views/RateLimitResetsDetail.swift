@@ -72,14 +72,20 @@ struct RateLimitResetsDetail: View {
             }
             // The claim's forced refresh can remove the in-flight credit from `expiries` a beat before
             // the outcome resolves; keep the "Resetting…" row alive across that gap so the spinner
-            // hands off to the banner instead of blinking out.
+            // hands off to the banner instead of blinking out. While that detached row shows, only a
+            // surviving timeline renders under it — the empty/unknown states are suppressed, because
+            // "You have no rate limit resets" under a still-running spinner reads as a contradiction.
             if let claimingExpiry, !visibleExpiries.contains(claimingExpiry) {
                 claimingRow().transition(.opacity)
-            }
-            switch Self.content(count: count - claimedExpiries.count, expiries: visibleExpiries) {
-            case .timeline(let entries): timeline(entries)
-            case .unknownExpiries(let count): unknownExpiriesState(count)
-            case .empty: emptyState
+                if case .timeline(let entries) = Self.content(count: count - claimedExpiries.count, expiries: visibleExpiries) {
+                    timeline(entries)
+                }
+            } else {
+                switch Self.content(count: count - claimedExpiries.count, expiries: visibleExpiries) {
+                case .timeline(let entries): timeline(entries)
+                case .unknownExpiries(let count): unknownExpiriesState(count)
+                case .empty: emptyState
+                }
             }
         }
         .padding(14)
