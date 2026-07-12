@@ -129,14 +129,27 @@ final class AppContainer {
                     // + token refresh (15s) + usage retry (10s) + reset-credit fetch (10s) ≈ 45s. The
                     // common race (the periodic timer's probe) clears in a couple of seconds; the
                     // pathological one keeps the popover's honest "Resetting…" up rather than showing
-                    // a success banner over pre-claim meters.
+                    // a success banner over pre-claim meters. A `.failed` probe is retried a few times
+                    // too — a transient flake right after the claim must not strand pre-claim meters
+                    // behind a success banner — before giving up loudly (the provider error already
+                    // shows on the card, so the staleness isn't silent).
+                    var failures = 0
                     for attempt in 0..<45 {
                         guard let dataStore else { return }
-                        if await dataStore.refresh(providerID: codex.provider.id, force: true) != .skipped {
+                        switch await dataStore.refresh(providerID: codex.provider.id, force: true) {
+                        case .refreshed, .cacheHit, .backedOff:
                             return
+                        case .failed:
+                            failures += 1
+                            guard failures < 3 else {
+                                AppLog.error(LogTag.plugin("codex"), "post-claim refresh failed \(failures) times; meters may lag until the next cycle")
+                                return
+                            }
+                            try? await Task.sleep(for: .seconds(2))
+                        case .skipped:
+                            AppLog.info(LogTag.plugin("codex"), "post-claim refresh waiting out an in-flight refresh (attempt \(attempt + 1))")
+                            try? await Task.sleep(for: .seconds(1))
                         }
-                        AppLog.info(LogTag.plugin("codex"), "post-claim refresh waiting out an in-flight refresh (attempt \(attempt + 1))")
-                        try? await Task.sleep(for: .seconds(1))
                     }
                     AppLog.error(LogTag.plugin("codex"), "post-claim refresh kept being skipped; meters may lag until the next cycle")
                 }

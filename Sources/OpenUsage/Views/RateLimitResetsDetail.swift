@@ -6,7 +6,8 @@ import SwiftUI
 /// within 48 hours — the same `expirySeverity` bands as the row's status dot), the exact expiry time,
 /// and the countdown to it on the trailing edge. Replaces the old `HoverTooltip` list. When no credits
 /// are available it shows a centered empty state. Mirrors `ModelUsageDetail` / `UsageTrendDetail`'s
-/// calm — header + flat body — presented via `.popover`.
+/// calm, presented via `.popover` — but deliberately without their title header (an owner call: the
+/// timeline is self-explanatory and the header cost a full row of the small popover).
 ///
 /// When a `claim` closure is supplied (the Codex resets row), each node also becomes claimable: hovering
 /// a node reveals a "Use" affordance, clicking it expands that node in place into an inline confirm, and
@@ -15,7 +16,6 @@ import SwiftUI
 /// the first time that credit enters confirm and reused for any retry), so a retried claim can never
 /// double-spend — the server answers `already_redeemed`, which counts as success.
 struct RateLimitResetsDetail: View {
-    let title: String
     /// The row's "N available" count. Only used to disambiguate an empty `expiries` list: 0 → genuinely
     /// no credits (empty state); > 0 → credits we have but whose expiry times weren't fetched.
     let count: Int

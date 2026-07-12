@@ -370,7 +370,7 @@ struct WidgetRowView: View {
                     }
                 } else if data.showsResetExpiries {
                     RateLimitResetsDetail(
-                        title: data.title, count: data.resetCreditCount, expiries: data.expiriesAt,
+                        count: data.resetCreditCount, expiries: data.expiriesAt,
                         onHoverChange: { inside in modelHover.detailHover(inside) },
                         onPinChange: { pinned in modelHover.setPinned(pinned) },
                         // Rows with reset expiries are Codex-only today, so the Codex claim service is
