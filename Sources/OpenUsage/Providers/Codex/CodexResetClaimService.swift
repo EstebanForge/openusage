@@ -1,0 +1,186 @@
+import Foundation
+import SwiftUI
+
+/// The outcome of a reset-credit claim, as the resets popover renders it — the consume endpoint's four
+/// `code` values collapsed to what the user needs to know (`reset` and `already_redeemed` are both
+/// "claimed": the latter is the idempotency key doing its job on a retry), plus a transport/HTTP
+/// `.failed`.
+enum ResetClaimOutcome: Equatable, Sendable {
+    case success
+    case nothingToReset
+    case noCredit
+    case failed
+}
+
+/// Claims a Codex rate-limit reset credit — the app's only provider-API write, so it is deliberately
+/// narrow: one credit per call, always by explicit credit id, guarded by the caller's idempotency key.
+/// The protocol was reverse-engineered from the open-source Codex CLI and verified live once; see
+/// docs/research/codex-reset-credit-claim.md.
+///
+/// The claim re-fetches the credit list at claim time and matches the target credit by its expiry
+/// instant (the identity the popover timeline carries), rather than trusting a cached id: the list is a
+/// safe GET, the id is guaranteed fresh, and a credit that raced away (claimed from the CLI or web in
+/// the meantime) simply fails to match → `.noCredit`, exactly the truth. A successful claim awaits a
+/// forced Codex refresh before returning, so by the time the popover shows its result banner the
+/// Session/Weekly meters and the credit count already tell the post-reset story.
+@MainActor
+final class CodexResetClaimService {
+    typealias Credentials = (accessToken: String, accountID: String?)
+
+    private let usageClient: CodexUsageClient
+    private let credentials: () async -> Credentials?
+    private let refreshAfterClaim: () async -> Void
+
+    /// Test seam: injected credentials and refresh hook, the same `usageClient` the requests go through.
+    init(
+        usageClient: CodexUsageClient,
+        credentials: @escaping () async -> Credentials?,
+        refreshAfterClaim: @escaping () async -> Void = {}
+    ) {
+        self.usageClient = usageClient
+        self.credentials = credentials
+        self.refreshAfterClaim = refreshAfterClaim
+    }
+
+    /// Production wiring: shares the Codex provider's auth store and usage client, so credential
+    /// selection can't drift from `refresh()` — the same "first usable access token, files then
+    /// keychain" bar (no token refresh here: the claim runs seconds after a successful usage fetch,
+    /// and a genuinely expired token surfaces as `.failed`, loudly logged).
+    convenience init(
+        authStore: CodexAuthStore,
+        usageClient: CodexUsageClient,
+        refreshAfterClaim: @escaping () async -> Void
+    ) {
+        self.init(
+            usageClient: usageClient,
+            credentials: {
+                if let candidate = authStore.loadAuthCandidates().first(where: \.hasUsableAccessToken),
+                   let token = candidate.auth.tokens?.accessToken {
+                    return (token, candidate.auth.tokens?.accountID)
+                }
+                let keychain = await loadOffMainActor { authStore.loadKeychainAuth() }
+                if let keychain, keychain.hasUsableAccessToken, let token = keychain.auth.tokens?.accessToken {
+                    return (token, keychain.auth.tokens?.accountID)
+                }
+                return nil
+            },
+            refreshAfterClaim: refreshAfterClaim
+        )
+    }
+
+    /// Claims the credit expiring at `expiry`. Never throws — every failure mode is logged loudly and
+    /// collapsed to an outcome the popover can render.
+    func claim(creditExpiringAt expiry: Date, redeemRequestID: String) async -> ResetClaimOutcome {
+        guard let credentials = await credentials() else {
+            AppLog.error(LogTag.plugin("codex"), "reset claim: no usable Codex credentials")
+            return .failed
+        }
+
+        // Fresh credit list (safe GET) → the id of the credit the user picked, matched by expiry.
+        let creditID: String
+        do {
+            let list = try await usageClient.fetchResetCredits(
+                accessToken: credentials.accessToken, accountID: credentials.accountID
+            )
+            guard (200..<300).contains(list.statusCode), let body = ProviderParse.jsonObject(list.body) else {
+                AppLog.error(LogTag.plugin("codex"), "reset claim: credit list fetch failed (\(list.statusCode))")
+                return .failed
+            }
+            guard let matched = Self.creditID(in: body, expiringAt: expiry) else {
+                // Not an error: the credit was claimed elsewhere (CLI/web) or expired since the popover
+                // rendered. The refresh reconciles the timeline with reality.
+                AppLog.warn(LogTag.plugin("codex"), "reset claim: no available credit matches the picked expiry")
+                await refreshAfterClaim()
+                return .noCredit
+            }
+            creditID = matched
+        } catch {
+            AppLog.error(LogTag.plugin("codex"), "reset claim: credit list fetch failed: \(error.localizedDescription)")
+            return .failed
+        }
+
+        let outcome: ResetClaimOutcome
+        do {
+            let response = try await usageClient.consumeResetCredit(
+                accessToken: credentials.accessToken,
+                accountID: credentials.accountID,
+                creditID: creditID,
+                redeemRequestID: redeemRequestID
+            )
+            outcome = Self.outcome(fromConsume: response)
+            if outcome == .failed {
+                AppLog.error(
+                    LogTag.plugin("codex"),
+                    "reset claim: consume failed (\(response.statusCode)): \(String(decoding: response.body.prefix(300), as: UTF8.self))"
+                )
+            }
+        } catch {
+            AppLog.error(LogTag.plugin("codex"), "reset claim: consume request failed: \(error.localizedDescription)")
+            return .failed
+        }
+
+        if outcome != .failed {
+            // The world changed (or turned out different from the snapshot): refresh before returning,
+            // so the result banner appears over already-reconciled meters and credit count.
+            await refreshAfterClaim()
+        }
+        return outcome
+    }
+
+    /// The id of the still-available credit whose `expires_at` matches `expiry` (±1s — the popover's
+    /// dates round-trip through the same ISO-8601 parsing as this list, so a real match is exact; the
+    /// tolerance only absorbs sub-second truncation). Mirrors the mapper's status filter: a credit with
+    /// no `status` counts as available, only an explicit non-"available" state is skipped.
+    static func creditID(in body: [String: Any], expiringAt expiry: Date) -> String? {
+        guard let credits = body["credits"] as? [[String: Any]] else { return nil }
+        return credits.first { credit in
+            if let status = credit["status"] as? String, status != "available" { return false }
+            guard let date = parseExpiry(credit["expires_at"]) else { return false }
+            return abs(date.timeIntervalSince(expiry)) < 1
+        }?["id"] as? String
+    }
+
+    /// Collapses a consume response to the popover's outcome. All four protocol codes arrive as HTTP
+    /// 200 — the outcome is in the body — so a non-2xx or an unrecognized code is `.failed`.
+    static func outcome(fromConsume response: HTTPResponse) -> ResetClaimOutcome {
+        guard (200..<300).contains(response.statusCode),
+              let body = ProviderParse.jsonObject(response.body),
+              let code = body["code"] as? String
+        else {
+            return .failed
+        }
+        switch code {
+        case "reset", "already_redeemed":
+            return .success
+        case "nothing_to_reset":
+            return .nothingToReset
+        case "no_credit":
+            return .noCredit
+        default:
+            return .failed
+        }
+    }
+
+    private static func parseExpiry(_ value: Any?) -> Date? {
+        if let string = value as? String, let date = OpenUsageISO8601.date(from: string) {
+            return date
+        }
+        if let seconds = ProviderParse.number(value) {
+            return Date(timeIntervalSince1970: seconds)
+        }
+        return nil
+    }
+}
+
+/// Hands the claim service to the resets popover through the environment: `nil` (the default — previews,
+/// share-card renders, reorder previews) renders the timeline read-only with no "Use" affordance.
+private struct CodexResetClaimServiceKey: EnvironmentKey {
+    static let defaultValue: CodexResetClaimService? = nil
+}
+
+extension EnvironmentValues {
+    var codexResetClaim: CodexResetClaimService? {
+        get { self[CodexResetClaimServiceKey.self] }
+        set { self[CodexResetClaimServiceKey.self] = newValue }
+    }
+}

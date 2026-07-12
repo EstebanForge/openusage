@@ -11,9 +11,9 @@ import SwiftUI
 /// When a `claim` closure is supplied (the Codex resets row), each node also becomes claimable: hovering
 /// a node reveals a "Use" affordance, clicking it expands that node in place into an inline confirm, and
 /// confirming runs the claim and shows the outcome. `claim` is `nil` for any non-claimable row, which
-/// renders exactly the read-only timeline. NOTE: the claim is currently MOCKED — `WidgetRowView` passes a
-/// fake closure that always succeeds after a short delay so the flow can be tested without spending a real
-/// credit. Wiring it to the live consume endpoint is a drop-in replacement of that closure.
+/// renders exactly the read-only timeline. Each credit's claim carries an idempotency key (a UUID minted
+/// the first time that credit enters confirm and reused for any retry), so a retried claim can never
+/// double-spend — the server answers `already_redeemed`, which counts as success.
 struct RateLimitResetsDetail: View {
     let title: String
     /// The row's "N available" count. Only used to disambiguate an empty `expiries` list: 0 → genuinely
@@ -26,9 +26,9 @@ struct RateLimitResetsDetail: View {
     /// Pins the popover open across the confirm / in-flight steps so a cursor slip can't tear the flow
     /// down mid-claim. `nil` when there's no claim flow (read-only timeline).
     var onPinChange: ((Bool) -> Void)?
-    /// Claims the reset credit expiring at the given instant. `nil` makes the timeline read-only (no
-    /// "Use" affordance). Currently a mock; see the type doc.
-    var claim: ((Date) async -> ResetClaimOutcome)?
+    /// Claims the reset credit expiring at the given instant, using the given idempotency key (see the
+    /// type doc). `nil` makes the timeline read-only (no "Use" affordance).
+    var claim: ((_ expiry: Date, _ redeemRequestID: String) async -> ResetClaimOutcome)?
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
@@ -40,11 +40,16 @@ struct RateLimitResetsDetail: View {
     @State private var claimingExpiry: Date?
     /// The node the cursor is currently over (drives the "Use" reveal).
     @State private var hoveredExpiry: Date?
+    /// Per-credit idempotency keys, minted the first time a credit enters confirm and reused for every
+    /// retry of that credit — the CLI's double-spend protection, copied exactly.
+    @State private var redeemRequestIDs: [Date: String] = [:]
     /// The result banner shown above the timeline after a claim resolves.
     @State private var banner: Banner?
-    /// Mock stand-in for "current usage is already at 0%": true once a reset has been claimed this
-    /// session, which disables the remaining "Use" buttons (a fresh reset means there's nothing left to
-    /// reset). The live version will read this from the current usage snapshot instead.
+    /// True once a claim in this popover session reset usage (or the server said there's nothing to
+    /// reset): the remaining "Use" buttons disable with a tooltip, because a freshly reset account has
+    /// nothing left to reset and a second claim would just burn a credit for `nothing_to_reset`'s
+    /// refusal. Cleared when the popover closes (fresh @State) — by then real usage may have resumed,
+    /// and the server refuses a pointless claim without spending the credit anyway.
     @State private var usageAtZero = false
 
     private static let width: CGFloat = 250
@@ -333,6 +338,9 @@ struct RateLimitResetsDetail: View {
     private static let flowAnimation: Animation = .snappy(duration: 0.25)
 
     private func beginConfirm(_ date: Date) {
+        if redeemRequestIDs[date] == nil {
+            redeemRequestIDs[date] = UUID().uuidString
+        }
         withAnimation(Self.flowAnimation) {
             banner = nil
             hoveredExpiry = nil
@@ -350,12 +358,15 @@ struct RateLimitResetsDetail: View {
 
     private func runClaim(_ date: Date) {
         guard let claim else { return }
+        // Reuse the key minted at confirm time; minting here as a fallback covers only a state loss
+        // between confirm and click (popover teardown re-runs confirm first).
+        let redeemRequestID = redeemRequestIDs[date] ?? UUID().uuidString
         withAnimation(Self.flowAnimation) {
             confirmingExpiry = nil
             claimingExpiry = date
         }
         Task {
-            let outcome = await claim(date)
+            let outcome = await claim(date, redeemRequestID)
             withAnimation(Self.flowAnimation) {
                 claimingExpiry = nil
                 apply(outcome, for: date)
@@ -442,13 +453,4 @@ struct RateLimitResetsDetail: View {
             )
         }
     }
-}
-
-/// The outcome of a reset-credit claim — mirrors the four `code` values the Codex consume endpoint
-/// returns (`reset`/`already_redeemed` collapse to `.success`), plus a transport/HTTP `.failed`.
-enum ResetClaimOutcome {
-    case success
-    case nothingToReset
-    case noCredit
-    case failed
 }

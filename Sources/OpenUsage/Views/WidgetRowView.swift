@@ -26,6 +26,9 @@ struct WidgetRowView: View {
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
     @State private var modelHover = HoverPopoverState()
+    /// Backs the resets popover's claim flow; `nil` outside the live dashboard (previews, share
+    /// renders), which renders the timeline read-only.
+    @Environment(\.codexResetClaim) private var codexResetClaim
     /// Party easter egg: fill meter bars with the party gradient instead of the severity color. Off by
     /// default everywhere else.
     @Environment(\.popoverPartyMode) private var partyMode
@@ -365,11 +368,13 @@ struct WidgetRowView: View {
                         title: data.title, count: data.resetCreditCount, expiries: data.expiriesAt,
                         onHoverChange: { inside in modelHover.detailHover(inside) },
                         onPinChange: { pinned in modelHover.setPinned(pinned) },
-                        // MOCK: no real claim yet — always succeeds after a short delay so the
-                        // confirm / in-flight / result flow can be exercised without spending a credit.
-                        claim: { _ in
-                            try? await Task.sleep(for: .milliseconds(1100))
-                            return .success
+                        // Rows with reset expiries are Codex-only today, so the Codex claim service is
+                        // the right backing; absent from the environment (previews, share renders) the
+                        // timeline is read-only.
+                        claim: codexResetClaim.map { service in
+                            { expiry, redeemRequestID in
+                                await service.claim(creditExpiringAt: expiry, redeemRequestID: redeemRequestID)
+                            }
                         }
                     )
                 }

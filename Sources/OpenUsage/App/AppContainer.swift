@@ -29,6 +29,11 @@ final class AppContainer {
     /// One-time onboarding state (the first-run Customize hint card). Only ever marked pending by
     /// `FirstRunSeeder` on a fresh install, so existing installs never see the card.
     let onboarding: OnboardingStore
+    /// Claims Codex rate-limit reset credits from the resets popover (the app's only provider-API
+    /// write). Shares the Codex provider's auth store and usage client; `nil` only if the Codex
+    /// provider were ever removed from the registry. Injected into the view tree via
+    /// `\.codexResetClaim`.
+    let codexResetClaim: CodexResetClaimService?
     /// The provider runtimes, kept so on-demand credential detection (the Customize "Reset All" reseed)
     /// can re-probe `hasLocalCredentials()` the same way first-run seeding does.
     private let providers: [ProviderRuntime]
@@ -108,6 +113,19 @@ final class AppContainer {
         self.notificationSettings = notificationSettings
         self.layout = layout
         self.dataStore = dataStore
+
+        // The resets popover's claim service, sharing the Codex provider's credential loading and HTTP
+        // client so the claim's auth can't drift from the provider's. A successful claim forces a Codex
+        // refresh so the meters and credit count reconcile before the popover shows its result.
+        self.codexResetClaim = providers.compactMap { $0 as? CodexProvider }.first.map { codex in
+            CodexResetClaimService(
+                authStore: codex.authStore,
+                usageClient: codex.usageClient,
+                refreshAfterClaim: { [weak dataStore] in
+                    _ = await dataStore?.refresh(providerID: codex.provider.id, force: true)
+                }
+            )
+        }
 
         // Anonymous, opt-out usage telemetry (two daily-rollup events). Its state lives in a dedicated
         // UserDefaults suite, kept separate from app settings so the user's opt-out choice and the
