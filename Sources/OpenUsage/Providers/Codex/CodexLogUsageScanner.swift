@@ -382,19 +382,32 @@ actor CodexLogUsageScanner {
             // diverging spellings would let the warning triangle and the hover panel disagree.
             let trimmedModel = event.model.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
 
-            guard let model = trimmedModel, let rates = pricing.resolve(model: model) else {
-                if let model = trimmedModel, event.total > 0 {
+            guard let model = trimmedModel else {
+                continue
+            }
+            let canonicalModel = pricing.supplement.canonicalName(for: model) ?? model
+            let isFastAlias = canonicalModel.hasSuffix("-fast")
+            let rateModel = isFastAlias ? String(canonicalModel.dropLast("-fast".count)) : canonicalModel
+
+            // Codex speed is a provider tier, not Cursor's `-fast` price variant. Resolve a fast
+            // alias through its unscaled base rates, then apply the Codex multiplier exactly once.
+            // If a third-party fast-only model has no base entry, retain its already-scaled rate
+            // and do not apply a second speed multiplier.
+            let baseRates = pricing.resolve(model: rateModel)
+            let resolvedRates = baseRates ?? pricing.resolve(model: model)
+            guard let rates = resolvedRates else {
+                if event.total > 0 {
                     accumulator.addUnknownModel(day: day, model: model)
                 }
                 continue
             }
-            let canonicalModel = pricing.supplement.canonicalName(for: model) ?? model
+            let appliesCodexFastTier = isFastAlias ? baseRates != nil : fastTier
             let eventCost = cost(
                 rates: rates,
                 event: event,
-                model: canonicalModel,
-                fastTier: fastTier,
-                fastMultiplier: codexPriorityMultiplier(for: canonicalModel, rates: rates)
+                model: rateModel,
+                fastTier: appliesCodexFastTier,
+                fastMultiplier: codexPriorityMultiplier(for: rateModel, rates: rates)
             )
             accumulator.add(day: day, tokens: event.total, cost: eventCost, model: model)
         }

@@ -511,6 +511,52 @@ final class CodexLogUsageScannerTests: XCTestCase {
         }
     }
 
+    func testAggregateFastAliasUsesUnscaledCodexRatesAndProviderMultiplier() throws {
+        let alias = PricingSupplement.AliasRule(
+            pattern: try NSRegularExpression(pattern: #"^gpt-5\.6-sol-ultra-fast$"#),
+            canonical: "gpt-5.6-sol-fast"
+        )
+        let rates = ModelRates(
+            inputPerMillion: 5,
+            outputPerMillion: 30,
+            cacheWritePerMillion: 6.25,
+            cacheReadPerMillion: 0.5
+        )
+        let pricing = ModelPricing(
+            supplement: PricingSupplement(
+                pricing: ["gpt-5.6-sol": rates],
+                fastMultipliers: ["gpt-5.6-sol": 2.5],
+                aliasRules: [alias]
+            ),
+            primary: PricingCatalog(entries: [:]),
+            secondary: PricingCatalog(entries: [:])
+        )
+
+        let short = CodexLogUsageScanner.aggregate(
+            events: [makeEvent(
+                "2026-05-12T08:00:00.000Z", model: "gpt-5.6-sol-ultra-fast",
+                input: 100_000, output: 10_000
+            )],
+            since: .distantPast,
+            pricing: pricing,
+            fastTier: false
+        )
+        let long = CodexLogUsageScanner.aggregate(
+            events: [makeEvent(
+                "2026-05-12T09:00:00.000Z", model: "gpt-5.6-sol-ultra-fast",
+                input: 300_000, cached: 100_000, output: 10_000
+            )],
+            since: .distantPast,
+            pricing: pricing,
+            fastTier: false
+        )
+
+        // The alias itself selects Codex priority pricing: 2x the unscaled base/long-context
+        // rates, not Cursor's 2.5x supplement variant and never both multipliers at once.
+        XCTAssertEqual(short.series.daily.first?.costUSD ?? 0, 1.6, accuracy: 0.000_001)
+        XCTAssertEqual(long.series.daily.first?.costUSD ?? 0, 5.1, accuracy: 0.000_001)
+    }
+
     func testAggregateUnknownModelIsExcludedFromTotalsButWarns() {
         let scan = CodexLogUsageScanner.aggregate(
             events: [

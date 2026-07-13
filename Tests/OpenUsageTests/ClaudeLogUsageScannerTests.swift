@@ -137,6 +137,24 @@ final class ClaudeLogUsageScannerTests: XCTestCase {
         XCTAssertEqual(entries[0].tokens.totalTokens, 3)
     }
 
+    func testPersistedPrintModeUsageCountsLikeInteractiveUsage() throws {
+        // `claude -p` writes the same assistant usage record with the `sdk-cli` entrypoint unless
+        // the caller explicitly passes `--no-session-persistence`.
+        let line = #"{"type":"assistant","entrypoint":"sdk-cli","timestamp":"2026-02-20T12:00:00.000Z","sessionId":"print-session","requestId":"print-request","version":"2.1.207","message":{"id":"print-message","model":"claude-test-model","usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":40,"speed":"standard"}}}"#
+
+        let entries = ClaudeLogUsageScanner.parseFile(Data(line.utf8))
+        let entry = try XCTUnwrap(entries.first)
+        let scan = ClaudeLogUsageScanner.aggregate(
+            entries: entries,
+            since: .distantPast,
+            pricing: pricing
+        )
+
+        XCTAssertEqual(entry.tokens.totalTokens, 190)
+        XCTAssertEqual(scan.series.daily.first?.totalTokens, 190)
+        XCTAssertEqual(scan.series.daily.first?.costUSD ?? 0, 0.001_815, accuracy: 0.000_000_001)
+    }
+
     func testParseFileExpandsOnlyAdvisorIterationsWithoutRecountingMainUsage() {
         let line = #"{"timestamp":"2026-02-20T12:00:00.000Z","requestId":"req_1","costUSD":1.23,"message":{"id":"msg_1","model":"main-model","usage":{"input_tokens":2,"output_tokens":491,"cache_creation_input_tokens":7853,"cache_read_input_tokens":226584,"iterations":[{"type":"message","input_tokens":1,"output_tokens":200},{"type":"advisor_message","model":"claude-test-model","input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4},{"type":"message","input_tokens":1,"output_tokens":291}]}}}"#
 
