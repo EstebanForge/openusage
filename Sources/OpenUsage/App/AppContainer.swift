@@ -55,23 +55,7 @@ final class AppContainer {
         // run from a terminal. Warmed here so the first refresh finds the cache ready.
         LoginShellEnvironment.shared.prewarm()
 
-        // Default provider order (see AGENTS.md "## Providers"): the three established providers first —
-        // Claude, Codex, Cursor — then every other provider alphabetically by display name. This registry
-        // order is the default provider order (`LayoutStore.orderedProviderIDs` falls back to it, and
-        // `resetToDefault` seeds it), so the dashboard, Customize sections, and the per-provider reset
-        // menu all read this way.
-        let providers: [ProviderRuntime] = [
-            ClaudeProvider(),
-            CodexProvider(),
-            CursorProvider(),
-            AntigravityProvider(),
-            CopilotProvider(),
-            DevinProvider(),
-            GrokProvider(),
-            OpenCodeProvider(),
-            OpenRouterProvider(),
-            ZAIProvider()
-        ]
+        let providers = ProviderCatalog.make()
         let registry = WidgetRegistry.from(providers)
         let apiKeyProviders = providers.compactMap { $0 as? any APIKeyManaging }
         let enablement = ProviderEnablementStore()
