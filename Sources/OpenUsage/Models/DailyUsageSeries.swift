@@ -10,13 +10,13 @@ import Foundation
 ///
 /// These are internal types with no serialization impact: the local HTTP API serializes `MetricLine`,
 /// not these.
-struct DailyUsageEntry: Hashable, Sendable {
+struct DailyUsageEntry: Hashable, Sendable, Codable {
     var date: String
     var totalTokens: Int
     var costUSD: Double?
 }
 
-struct DailyUsageSeries: Hashable, Sendable {
+struct DailyUsageSeries: Hashable, Sendable, Codable {
     var daily: [DailyUsageEntry]
 }
 
@@ -53,6 +53,25 @@ struct DailyModelUsageEntry: Hashable, Sendable, Codable {
 
 struct ModelUsageSeries: Hashable, Sendable, Codable {
     var daily: [DailyModelUsageEntry]
+}
+
+/// The presentation-free daily history retained on a provider snapshot. The same normalized values
+/// feed the local spend rows and, when explicitly classified as machine-local by the provider's
+/// descriptor, the private iCloud sync file.
+struct ProviderUsageHistory: Hashable, Sendable, Codable {
+    var series: DailyUsageSeries
+    var modelUsage: ModelUsageSeries?
+    var unknownModelsByDay: [String: Set<String>]
+
+    init(
+        series: DailyUsageSeries,
+        modelUsage: ModelUsageSeries? = nil,
+        unknownModelsByDay: [String: Set<String>] = [:]
+    ) {
+        self.series = series
+        self.modelUsage = modelUsage
+        self.unknownModelsByDay = unknownModelsByDay
+    }
 }
 
 /// A period-scoped, UI-ready breakdown attached to the same `.values` line as the spend row it explains.

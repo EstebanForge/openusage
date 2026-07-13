@@ -97,6 +97,7 @@ The release workflow needs these repository secrets (Settings → Secrets and va
 | `APPLE_ID`                   | the Apple ID email used for notarization                              |
 | `APPLE_PASSWORD`             | an app-specific password for that Apple ID                            |
 | `APPLE_TEAM_ID`              | your Apple Developer team ID                                          |
+| `APPLE_DEVELOPER_ID_ICLOUD_PROFILE` | base64 Developer ID provisioning profile for the production iCloud container |
 | `SPARKLE_PUBLIC_KEY`         | base64 EdDSA public key, baked into the build as `SUPublicEDKey`      |
 | `SPARKLE_PRIVATE_KEY`        | base64 EdDSA private key used to sign the DMG                         |
 | `POSTHOG_CLI_API_KEY`        | PostHog personal API key used to upload dSYMs for crash symbolication |
