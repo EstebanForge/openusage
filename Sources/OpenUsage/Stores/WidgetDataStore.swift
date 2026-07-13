@@ -334,10 +334,12 @@ final class WidgetDataStore {
             snapshots = localSnapshots
             return
         }
+        let renderDate = now()
         let merged = UsageHistoryAggregator.merged(
             localSnapshots: localSnapshots,
             peerDocuments: peerHistoryDocuments,
-            descriptors: registry.historyDescriptorsByProvider
+            descriptors: registry.historyDescriptorsByProvider,
+            now: renderDate
         )
         var rendered = localSnapshots
         for (providerID, history) in merged {
@@ -348,13 +350,13 @@ final class WidgetDataStore {
                 providerID: providerID,
                 displayName: provider.displayName,
                 lines: [],
-                refreshedAt: peerHistoryDocuments.map(\.updatedAt).max() ?? now()
+                refreshedAt: peerHistoryDocuments.map(\.updatedAt).max() ?? renderDate
             )
             rendered[providerID] = UsageHistorySnapshotRenderer.render(
                 local: local,
                 history: history,
                 descriptor: descriptor,
-                now: now()
+                now: renderDate
             )
         }
         snapshots = rendered

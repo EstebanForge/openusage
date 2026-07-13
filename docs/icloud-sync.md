@@ -14,7 +14,8 @@ unknown-model warnings, and model breakdowns. The same combined spend rows feed 
 Spend, menu-bar pins, share cards, and the local HTTP API. Both `/v1/usage` and `/v1/limits` read the
 same rendered snapshots; the former is the deprecated UI-oriented format and the latter is the
 normalized format. Quotas, plans, balances, and provider errors remain this Mac's own values inside
-those snapshots.
+those snapshots. Rows retained in an older peer file are ignored once they fall outside the same
+calendar window used by the local history scanners.
 
 This Mac updates its file after a five-minute refresh batch, a manual refresh, or a provider enablement
 change. iCloud delivery is eventually consistent, so another Mac can take longer than five minutes to

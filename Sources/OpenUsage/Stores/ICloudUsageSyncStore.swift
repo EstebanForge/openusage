@@ -276,7 +276,7 @@ final class ICloudUsageSyncStore {
         guard observesMetadataChanges else { return }
         guard metadataQuery == nil else { return }
         let query = NSMetadataQuery()
-        query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
+        query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         query.predicate = NSPredicate(format: "%K LIKE '*.json'", NSMetadataItemFSNameKey)
         let center = NotificationCenter.default
         notificationTokens = [
