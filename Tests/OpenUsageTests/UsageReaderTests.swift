@@ -118,18 +118,18 @@ final class UsageReaderTests: XCTestCase {
         XCTAssertEqual(provider.refreshCount, 0)
     }
 
-    func testFailedForceWithoutCacheReportsRefreshError() async {
+    func testFailedForceWithoutCacheReturnsMachineReadableError() async throws {
         let defaults = defaults()
         let provider = StubProvider()
         provider.refreshError = "Not logged in"
 
-        do {
-            _ = try await UsageReader(userDefaults: defaults, providers: [provider]).read(providerID: "stub", force: true)
-            XCTFail("Expected refresh failure")
-        } catch UsageReaderError.refreshFailed(let message) {
-            XCTAssertEqual(message, "stub: Not logged in")
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
+        let result = try await UsageReader(userDefaults: defaults, providers: [provider])
+            .read(providerID: "stub", force: true)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: result.data) as? [String: Any])
+        let errors = try XCTUnwrap(root["errors"] as? [[String: Any]])
+
+        XCTAssertEqual(result.warnings, ["stub: Not logged in"])
+        XCTAssertEqual(errors.first?["providerId"] as? String, "stub")
+        XCTAssertEqual(errors.first?["message"] as? String, "Not logged in")
     }
 }

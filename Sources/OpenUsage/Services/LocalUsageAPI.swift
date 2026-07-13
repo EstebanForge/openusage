@@ -45,7 +45,11 @@ enum LocalUsageAPI {
             guard method == "GET" else { return error(405, "method_not_allowed") }
             let providerID = segments[2]
             guard state.knownIDs.contains(providerID) else { return error(404, "provider_not_found") }
-            guard state.snapshots[providerID] != nil else { return Response(status: 204, body: nil) }
+            // A failed refresh without a last-good snapshot still has useful machine-readable output.
+            // Only the genuinely untouched state is 204; failures return the normal envelope + error.
+            guard state.snapshots[providerID] != nil || state.errors[providerID] != nil else {
+                return Response(status: 204, body: nil)
+            }
             return Response(
                 status: 200,
                 body: LocalLimitsAPI.encode(providerIDs: [providerID], state: state)

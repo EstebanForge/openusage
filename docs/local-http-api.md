@@ -18,8 +18,8 @@ and the exact format printed by the `openusage` CLI.
 
 Returns the same envelope containing one provider. It works for disabled providers too.
 
-- **200 OK** — limits envelope.
-- **204 No Content** — provider is known but has no snapshot yet.
+- **200 OK** — limits envelope, including an `errors` entry when a refresh failed.
+- **204 No Content** — provider is known but has neither a snapshot nor a recorded refresh failure yet.
 - **404 Not Found** — provider ID is unknown.
 
 ### `GET /v1/usage`

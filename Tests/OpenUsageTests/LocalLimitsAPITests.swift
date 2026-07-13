@@ -83,7 +83,7 @@ final class LocalLimitsAPITests: XCTestCase {
     }
 
     func testKnownProviderRouteUsesSameEnvelopeAndPreservesMissingSnapshotStatus() throws {
-        let state = LocalUsageAPI.State(
+        var state = LocalUsageAPI.State(
             enabledOrderedIDs: [],
             knownIDs: ["codex"],
             snapshots: [:],
@@ -91,6 +91,15 @@ final class LocalLimitsAPITests: XCTestCase {
         )
         XCTAssertEqual(LocalUsageAPI.respond(method: "GET", path: "/v1/limits/codex", state: state).status, 204)
         XCTAssertEqual(LocalUsageAPI.respond(method: "GET", path: "/v1/limits/nope", state: state).status, 404)
+
+        state.errors["codex"] = "Not logged in"
+        let failed = LocalUsageAPI.respond(method: "GET", path: "/v1/limits/codex", state: state)
+        let root = try json(failed.body)
+        let errors = try XCTUnwrap(root["errors"] as? [[String: Any]])
+        XCTAssertEqual(failed.status, 200)
+        XCTAssertTrue((root["providers"] as? [String: Any])?.isEmpty == true)
+        XCTAssertEqual(errors.first?["providerId"] as? String, "codex")
+        XCTAssertEqual(errors.first?["message"] as? String, "Not logged in")
     }
 
     func testFlexibleConsumptionExportsUncappedValueWithoutInventingLimit() throws {
