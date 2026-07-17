@@ -72,14 +72,19 @@ enum ClaudeLogFixture {
     static func scanner(home: URL?) -> ClaudeLogUsageScanner {
         ClaudeLogUsageScanner(
             environment: FakeEnvironment(home.map { ["CLAUDE_CONFIG_DIR": $0.path] } ?? [:]),
-            homeDirectory: { FileManager.default.temporaryDirectory.appendingPathComponent("openusage-no-claude-home") }
+            homeDirectory: { FileManager.default.temporaryDirectory.appendingPathComponent("openusage-no-claude-home") },
+            incrementalScanner: IncrementalJSONLScanner<ClaudeLogUsageScanner.Entry>()
         )
     }
 
     /// A scanner whose *user home* is the fixture from `makeUserHome` — exercises the default
     /// `~/.claude` root plus Cowork session discovery, with no `CLAUDE_CONFIG_DIR` override.
     static func scanner(userHome: URL) -> ClaudeLogUsageScanner {
-        ClaudeLogUsageScanner(environment: FakeEnvironment([:]), homeDirectory: { userHome })
+        ClaudeLogUsageScanner(
+            environment: FakeEnvironment([:]),
+            homeDirectory: { userHome },
+            incrementalScanner: IncrementalJSONLScanner<ClaudeLogUsageScanner.Entry>()
+        )
     }
 
     /// One Claude Code usage line in the modern log shape. Pass `nil` to omit a field.
@@ -137,7 +142,8 @@ enum CodexLogFixture {
     static func scanner(home: URL?) -> CodexLogUsageScanner {
         CodexLogUsageScanner(
             environment: FakeEnvironment(home.map { ["CODEX_HOME": $0.path] } ?? [:]),
-            homeDirectory: { FileManager.default.temporaryDirectory.appendingPathComponent("openusage-no-codex-home") }
+            homeDirectory: { FileManager.default.temporaryDirectory.appendingPathComponent("openusage-no-codex-home") },
+            incrementalScanner: IncrementalJSONLScanner<CodexLogUsageScanner.Event>()
         )
     }
 
@@ -180,12 +186,54 @@ enum CodexLogFixture {
         ]
     }
 
+    /// An `event_msg`/`thread_settings_applied` line carrying the session's service tier, the way
+    /// Codex CLI ≥ July 2026 records tier changes.
+    static func threadSettingsApplied(timestamp: String, serviceTier: String, model: String = "gpt-5.2") -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": [
+                "type": "thread_settings_applied",
+                "thread_settings": ["model": model, "service_tier": serviceTier]
+            ]
+        ])
+    }
+
     /// A `session_meta` line marking the file as a `thread_spawn` subagent session.
     static func subagentSessionMeta(timestamp: String) -> String {
         jsonLine([
             "timestamp": timestamp,
             "type": "session_meta",
             "payload": ["id": "subagent-abc", "source": ["subagent": ["thread_spawn": ["parent_thread_id": "parent-xyz"]]]]
+        ])
+    }
+
+    /// A `session_meta` line marking the file as a fork (`forked_from_id`, no subagent source).
+    static func forkSessionMeta(timestamp: String) -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "session_meta",
+            "payload": ["id": "fork-abc", "forked_from_id": "parent-xyz"]
+        ])
+    }
+
+    /// A root session's `session_meta` line (no parent, nothing replayed).
+    static func rootSessionMeta(timestamp: String) -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "session_meta",
+            "payload": ["id": "root-abc", "source": "vscode"]
+        ])
+    }
+
+    /// An `event_msg`/`task_started` line. `startedAt` is the turn's start as epoch seconds — a
+    /// replayed parent turn keeps its original (older) value; a live turn is at/after the child
+    /// session's creation.
+    static func taskStarted(timestamp: String, startedAt: Int) -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": ["type": "task_started", "turn_id": "turn-1", "started_at": startedAt]
         ])
     }
 

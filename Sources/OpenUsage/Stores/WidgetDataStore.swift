@@ -24,6 +24,10 @@ final class WidgetDataStore {
     private let orderedDescriptors: @MainActor () -> [WidgetDescriptor]
     /// Clock for the failure-backoff window. Injected so tests can advance time deterministically.
     private let now: () -> Date
+    /// Monotonic clock for refresh durations, kept separate from wall time so a clock adjustment cannot
+    /// produce a negative or wildly inflated provider timing. Tests inject exact ticks.
+    private let monotonicNow: () -> TimeInterval
+    private let slowProviderRefreshThreshold: TimeInterval
     /// Quota-notification preferences (three independent triggers). Injected; `nil` disables
     /// notifications entirely (tests and previews that don't wire it).
     private let notificationSettings: (@MainActor () -> NotificationSettingsStore)?
@@ -44,8 +48,14 @@ final class WidgetDataStore {
     /// 5-minute heartbeat always retries; it only suppresses the sub-interval re-probes a wake burst
     /// would cause. The manual `force` refresh (⌘R) always bypasses it.
     private static let failureRetryBackoff: TimeInterval = 60
+    static let defaultSlowProviderRefreshThreshold: TimeInterval = 10
 
+    /// Rendered snapshots consumed by every UI/API surface. Equal to `localSnapshots` when iCloud sync
+    /// is off; machine-local history rows are rebuilt from the union while sync is on.
     var snapshots: [String: ProviderSnapshot] = [:]
+    /// Last-good snapshots produced on this Mac. These alone are cached and exported to iCloud, so a
+    /// peer contribution can never echo back out and multiply on the next device.
+    private(set) var localSnapshots: [String: ProviderSnapshot] = [:]
     var refreshingProviderIDs: Set<String> = []
     /// Wall-clock time the most recent full refresh pass finished. Together with the chosen refresh
     /// cadence it drives the dashboard footer's live "Next update in …" countdown, so the footer reflects
@@ -70,6 +80,9 @@ final class WidgetDataStore {
     /// bulk — so the recorder can roll daily usage and error counts up into one event per provider per
     /// day. `nil` (and so a no-op) in tests and previews. Not observable UI state.
     @ObservationIgnored var onRefreshOutcome: (@MainActor (String, RefreshOutcome, ErrorCategory?, Bool) -> Void)?
+    /// Wired by `ICloudUsageSyncStore`; debounced there so a concurrent provider batch produces one file.
+    @ObservationIgnored var onLocalHistoryChanged: (@MainActor () -> Void)?
+    @ObservationIgnored private var peerHistoryDocuments: [UsageHistoryDocument] = []
 
     /// Global meter style: whether every bounded tile (and the menu-bar value) renders as "used" or
     /// "left/remaining". Persisted so the choice survives relaunch; defaults to `.remaining`.
@@ -98,9 +111,12 @@ final class WidgetDataStore {
         isProviderEnabled: @escaping @MainActor (String) -> Bool = { _ in true },
         orderedDescriptors: (@MainActor () -> [WidgetDescriptor])? = nil,
         now: @escaping () -> Date = Date.init,
+        monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        slowProviderRefreshThreshold: TimeInterval = WidgetDataStore.defaultSlowProviderRefreshThreshold,
         notificationSettings: (@MainActor () -> NotificationSettingsStore)? = nil,
         postNotification: (@MainActor (String, String, String, String) async -> Bool)? = nil
     ) {
+        precondition(slowProviderRefreshThreshold >= 0)
         self.registry = registry
         self.providersByID = Dictionary(uniqueKeysWithValues: providers.map { ($0.provider.id, $0) })
         self.cache = cache
@@ -108,6 +124,8 @@ final class WidgetDataStore {
         self.isProviderEnabled = isProviderEnabled
         self.orderedDescriptors = orderedDescriptors ?? { registry.descriptors }
         self.now = now
+        self.monotonicNow = monotonicNow
+        self.slowProviderRefreshThreshold = slowProviderRefreshThreshold
         self.notificationSettings = notificationSettings
         self.postNotification = postNotification
             ?? { idPrefix, title, subtitle, body in
@@ -119,7 +137,9 @@ final class WidgetDataStore {
         // Stale-while-revalidate: load whatever was cached (expired included) so the menu bar and
         // dashboard show last-known values immediately at launch instead of "—"; the refresh loop
         // replaces them as soon as fresh data lands.
-        self.snapshots = cache.loadSnapshots(providerIDs: registry.providers.map(\.id))
+        let loaded = cache.loadSnapshots(providerIDs: registry.providers.map(\.id))
+        self.localSnapshots = loaded
+        self.snapshots = loaded
     }
 
     /// Refresh every enabled provider, concurrently — one slow provider never delays the rest.
@@ -131,10 +151,10 @@ final class WidgetDataStore {
         // `Task {}` from MainActor context inherits the isolation (a task-group child can't capture
         // the non-Sendable store), so: fire one task per provider, then await them all.
         let providerIDs = registry.providers.map(\.id).filter { isProviderEnabled($0) }
-        let start = Date()
+        let start = monotonicNow()
         AppLog.info(.refresh, "batch start (\(providerIDs.count) providers, force=\(force))")
         let tasks = providerIDs.map { providerID in
-            Task { await self.refresh(providerID: providerID, force: force) }
+            Task { await self.refresh(providerID: providerID, force: force, notifyHistoryChange: false) }
         }
         var outcomes: [RefreshOutcome] = []
         outcomes.reserveCapacity(tasks.count)
@@ -145,13 +165,14 @@ final class WidgetDataStore {
         // (this time + one refresh interval), mirroring the periodic loop that sleeps one interval
         // after each pass.
         lastRefreshAt = Date()
-        let durationMs = Int(Date().timeIntervalSince(start) * 1000)
+        let durationMs = durationMilliseconds(since: start)
         // Count THIS batch's actual outcomes, not the long-lived `providerErrors` map (which persists
         // across passes, so reading it would miscount cache hits and stale earlier failures).
         let refreshed = outcomes.count { $0 == .refreshed }
         let failed = outcomes.count { $0 == .failed }
         let cached = outcomes.count { $0 == .cacheHit }
         let backedOff = outcomes.count { $0 == .backedOff }
+        if refreshed > 0 { onLocalHistoryChanged?() }
         AppLog.info(.refresh, "batch end (\(durationMs)ms, \(refreshed) ok / \(failed) failed / \(cached) cached / \(backedOff) backed off)")
     }
 
@@ -201,14 +222,19 @@ final class WidgetDataStore {
     enum RefreshOutcome: Sendable { case refreshed, failed, cacheHit, skipped, backedOff }
 
     @discardableResult
-    func refresh(providerID: String, force: Bool = false) async -> RefreshOutcome {
+    func refresh(
+        providerID: String,
+        force: Bool = false,
+        notifyHistoryChange: Bool = true
+    ) async -> RefreshOutcome {
         guard isProviderEnabled(providerID) else { return .skipped }
         if !force, let cached = cache.snapshot(providerID: providerID) {
             // Skip the no-op write: `@Observable` doesn't compare values, so unconditionally
             // re-assigning an unchanged snapshot would re-render the menu-bar label every pass.
             AppLog.debug(.refresh, "cache hit \(providerID)")
-            if snapshots[providerID] != cached {
-                snapshots[providerID] = cached
+            if localSnapshots[providerID] != cached {
+                localSnapshots[providerID] = cached
+                rebuildRenderedSnapshots()
             }
             return .cacheHit
         }
@@ -230,9 +256,23 @@ final class WidgetDataStore {
         }
         refreshingProviderIDs.insert(providerID)
         defer { refreshingProviderIDs.remove(providerID) }
-        let start = Date()
-        let snapshot = await provider.refresh()
-        let durationMs = Int(Date().timeIntervalSince(start) * 1000)
+        let start = monotonicNow()
+        var snapshot = await ProviderRefreshContext.$isManual.withValue(force) {
+            await provider.refresh()
+        }
+        // A canceled refresh may still return if a provider's underlying work is non-throwing. Never
+        // publish that potentially partial snapshot; keep the last-good state exactly as it was.
+        guard !Task.isCancelled else {
+            AppLog.debug(.refresh, "cancelled \(providerID) refresh; keeping last-good snapshot")
+            return .skipped
+        }
+        let durationMs = durationMilliseconds(since: start)
+        if TimeInterval(durationMs) >= slowProviderRefreshThreshold * 1000 {
+            AppLog.warn(
+                .refresh,
+                "\(providerID) slow refresh (\(durationMs)ms, threshold=\(Int(slowProviderRefreshThreshold * 1000))ms)"
+            )
+        }
         if let message = Self.errorMessage(in: snapshot) {
             // Failed refresh: surface the error but keep the last good snapshot on screen rather than
             // collapsing every row to "No data". The provider error string is already user-safe.
@@ -248,11 +288,35 @@ final class WidgetDataStore {
         }
         // Recovered: drop any backoff so the provider resumes the normal cadence immediately.
         failureRetryAfter[providerID] = nil
-        snapshots[providerID] = snapshot
+        // A provider can refresh its live limits successfully while its optional local log/CSV scan
+        // produces no result. Keep only the last-good normalized history in that case; the new plan,
+        // limits, warnings, and timestamp still win. A non-nil empty history remains authoritative and
+        // clears the old rows, because it proves the scan completed and found no usage.
+        if snapshot.usageHistory == nil,
+           let history = localSnapshots[providerID]?.usageHistory,
+           let descriptor = registry.historyDescriptorsByProvider[providerID]
+        {
+            snapshot.usageHistory = history
+            snapshot = UsageHistorySnapshotRenderer.render(
+                local: snapshot,
+                history: history,
+                descriptor: descriptor,
+                now: now(),
+                combined: false
+            )
+            AppLog.debug(.refresh, "preserved last-good history for \(providerID) after scan miss")
+        }
+        localSnapshots[providerID] = snapshot
         cache.store(snapshot)
+        rebuildRenderedSnapshots()
+        if notifyHistoryChange { onLocalHistoryChanged?() }
         AppLog.info(.refresh, "\(providerID) ok (\(durationMs)ms)")
         onRefreshOutcome?(providerID, .refreshed, nil, force)
         return .refreshed
+    }
+
+    private func durationMilliseconds(since start: TimeInterval) -> Int {
+        max(0, Int((monotonicNow() - start) * 1000))
     }
 
     /// Clears a provider's failure backoff so the next pass probes it immediately. Called when the user
@@ -261,6 +325,80 @@ final class WidgetDataStore {
     /// retry until the 5-minute heartbeat). The periodic loop never calls this — only the user action does.
     func clearFailureBackoff(for providerID: String) {
         failureRetryAfter[providerID] = nil
+    }
+
+    /// Rebuild the in-memory union immediately after a provider toggle. Local cached data remains
+    /// available to direct API reads, but disabled providers stop receiving peer contributions.
+    func providerEnablementDidChange() {
+        rebuildRenderedSnapshots()
+    }
+
+    /// Replaces the downloaded peer set. A conflicted duplicate device file resolves to the newest
+    /// valid document, and this Mac's own downloaded copy is excluded in favor of current memory.
+    func setPeerHistoryDocuments(_ documents: [UsageHistoryDocument], ownDeviceID: String) {
+        peerHistoryDocuments = UsageHistoryDocument.newestByDevice(documents)
+            .filter { $0.deviceID != ownDeviceID }
+        rebuildRenderedSnapshots()
+    }
+
+    func clearPeerHistoryDocuments() {
+        guard !peerHistoryDocuments.isEmpty else { return }
+        peerHistoryDocuments = []
+        rebuildRenderedSnapshots()
+    }
+
+    func localHistoryDocument(deviceID: String, deviceName: String, updatedAt: Date = Date()) -> UsageHistoryDocument {
+        var providers: [String: ProviderUsageHistory] = [:]
+        for (providerID, descriptor) in registry.historyDescriptorsByProvider
+        where descriptor.scope == .machineLocal && isProviderEnabled(providerID) {
+            if let history = localSnapshots[providerID]?.usageHistory {
+                providers[providerID] = history
+            }
+        }
+        return UsageHistoryDocument(
+            deviceID: deviceID,
+            deviceName: deviceName,
+            updatedAt: updatedAt,
+            providers: providers
+        )
+    }
+
+    private func rebuildRenderedSnapshots() {
+        guard !peerHistoryDocuments.isEmpty else {
+            snapshots = localSnapshots
+            return
+        }
+        let renderDate = now()
+        let enabledDescriptors = registry.historyDescriptorsByProvider.reduce(
+            into: [String: UsageHistoryDescriptor]()
+        ) { result, entry in
+            if isProviderEnabled(entry.key) { result[entry.key] = entry.value }
+        }
+        let merged = UsageHistoryAggregator.merged(
+            localSnapshots: localSnapshots,
+            peerDocuments: peerHistoryDocuments,
+            descriptors: enabledDescriptors,
+            now: renderDate
+        )
+        var rendered = localSnapshots
+        for (providerID, history) in merged {
+            guard let descriptor = registry.historyDescriptorsByProvider[providerID],
+                  let provider = registry.provider(id: providerID)
+            else { continue }
+            let local = localSnapshots[providerID] ?? ProviderSnapshot(
+                providerID: providerID,
+                displayName: provider.displayName,
+                lines: [],
+                refreshedAt: peerHistoryDocuments.map(\.updatedAt).max() ?? renderDate
+            )
+            rendered[providerID] = UsageHistorySnapshotRenderer.render(
+                local: local,
+                history: history,
+                descriptor: descriptor,
+                now: renderDate
+            )
+        }
+        snapshots = rendered
     }
 
     /// The provider's latest refresh error, or `nil` when its last refresh succeeded.

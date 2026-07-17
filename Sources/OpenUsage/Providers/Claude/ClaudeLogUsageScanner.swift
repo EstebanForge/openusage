@@ -12,26 +12,24 @@ import Foundation
 /// - Entries are deduplicated by `(message.id, requestId)`, with a second pass that catches
 ///   sidechain logs replaying a parent message under a new request id. On collision the non-sidechain
 ///   entry wins, then the larger token total, then the one carrying a `speed` field.
+/// - Advisor-message iterations become separate entries under their own model. Other iteration
+///   types stay represented only by the parent usage totals, avoiding double-counting.
 /// - Cost mode "auto": a line's `costUSD` when present, else tokens priced through `ModelPricing`.
 ///
-/// An actor so the whole scan runs off the main actor, and so the per-file parse cache (keyed by
-/// path + size + mtime) can persist across refreshes: the ~5-minute provider refresh re-parses only
-/// files that changed, then re-runs the cheap dedup + day aggregation over cached entries.
+/// An actor so the whole scan runs off the main actor. Parsed files are cached by path + size + mtime
+/// in memory and Application Support: refreshes and relaunches parse only changed files, then re-run
+/// the cheap dedup + day aggregation over cached entries before local model-rate estimates.
 actor ClaudeLogUsageScanner {
     private let environment: EnvironmentReading
     private let homeDirectory: @Sendable () -> URL
-
-    init(
-        environment: EnvironmentReading = ProcessEnvironmentReader(),
-        homeDirectory: @escaping @Sendable () -> URL = { FileManager.default.homeDirectoryForCurrentUser }
-    ) {
-        self.environment = environment
-        self.homeDirectory = homeDirectory
-    }
+    private let scanner: IncrementalJSONLScanner<Entry>
+    /// Scoped provider instances pass their stable parse-source identity here. Account or time filters
+    /// over the same physical roots deliberately pass the same value and share whole-file records.
+    private let cacheIdentityOverride: String?
 
     /// One parsed usage line. Token buckets are pre-normalized into `TokenBreakdown`; dedup fields
     /// ride along so the global dedup pass can run over cached entries.
-    struct Entry: Sendable, Equatable {
+    struct Entry: Codable, Sendable, Equatable {
         var timestamp: Date
         var tokens: TokenBreakdown
         var messageID: String?
@@ -44,23 +42,94 @@ actor ClaudeLogUsageScanner {
         var model: String?
     }
 
-    /// Off-main-actor incremental parse cache (keyed path + size + mtime), owned by the shared scanner.
-    private let scanner = IncrementalJSONLScanner<Entry>(logTag: LogTag.plugin("claude"))
+    /// Cards that read the same Claude home share one actor, so the first scan populates both the
+    /// in-memory and disk caches and the rest reuse it. Tests inject an isolated memory-only scanner.
+    private static let sharedScanner = IncrementalJSONLScanner<Entry>(
+        logTag: LogTag.plugin("claude"),
+        persistence: JSONLScanCachePersistence(namespace: "claude", schemaVersion: 1)
+    )
+
+    static func flushPersistentCacheWrites() async {
+        await sharedScanner.flushPendingWrites()
+    }
+
+    init(
+        environment: EnvironmentReading = ProcessEnvironmentReader(),
+        homeDirectory: @escaping @Sendable () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
+        incrementalScanner: IncrementalJSONLScanner<Entry>? = nil,
+        cacheIdentityOverride: String? = nil
+    ) {
+        precondition(cacheIdentityOverride?.isEmpty != true)
+        self.environment = environment
+        self.homeDirectory = homeDirectory
+        self.scanner = incrementalScanner ?? Self.sharedScanner
+        self.cacheIdentityOverride = cacheIdentityOverride
+    }
 
     /// Scan the last `daysBack` days of Claude logs. Returns `nil` when no Claude data directory or
     /// no log files exist (the spend tiles then render "No data"); returns an empty series when logs
     /// exist but have no usage in the window.
     func scan(daysBack: Int = 30, now: Date = Date(), pricing: ModelPricing) async -> LogUsageScan? {
+        let since = JSONLScanning.sinceDate(daysBack: daysBack, now: now)
+        let cacheIdentity = parseCacheIdentity()
         let roots = claudeRoots()
-        guard !roots.isEmpty else { return nil }
+        guard !roots.isEmpty else {
+            _ = await scanner.items(
+                from: [], since: since, cacheIdentity: cacheIdentity, parse: Self.parseFile
+            )
+            return nil
+        }
 
         let files = Self.usageFiles(under: roots)
-        guard !files.isEmpty else { return nil }
+        guard !files.isEmpty else {
+            _ = await scanner.items(
+                from: [], since: since, cacheIdentity: cacheIdentity, parse: Self.parseFile
+            )
+            return nil
+        }
 
-        let since = JSONLScanning.sinceDate(daysBack: daysBack, now: now)
         // Entries come back concatenated in path-sorted file order, so dedup's keep-first is deterministic.
-        let entries = await scanner.items(from: files, since: since, parse: Self.parseFile)
+        guard let entries = await scanner.items(
+            from: files,
+            since: since,
+            cacheIdentity: cacheIdentity,
+            parse: Self.parseFile
+        ), !Task.isCancelled else { return nil }
         return Self.aggregate(entries: Self.dedup(entries), since: since, pricing: pricing)
+    }
+
+    /// Stable source configuration identity rather than the discovered root list: Cowork adds session
+    /// roots over time, and a new session must extend the same cache instead of cold-parsing every old
+    /// file. Scoped root overrides pass an explicit identity so distinct homes stay partitioned.
+    private func parseCacheIdentity() -> String {
+        if let cacheIdentityOverride { return cacheIdentityOverride }
+        let home = homeDirectory().resolvingSymlinksInPath().path
+        let configuredRoots: [URL]
+        if let raw = environment.value(for: "CLAUDE_CONFIG_DIR")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty
+        {
+            configuredRoots = raw.split(separator: ",").compactMap { part in
+                let value = part.trimmingCharacters(in: .whitespaces)
+                guard !value.isEmpty else { return nil }
+                var url = URL(fileURLWithPath: expandHome(value))
+                if url.lastPathComponent == "projects" { url.deleteLastPathComponent() }
+                return url
+            }
+        } else {
+            let homeURL = homeDirectory()
+            let xdg = environment.value(for: "XDG_CONFIG_HOME")?.nilIfEmpty
+                .map { URL(fileURLWithPath: expandHome($0)) }
+                ?? homeURL.appendingPathComponent(".config")
+            configuredRoots = [
+                xdg.appendingPathComponent("claude"),
+                homeURL.appendingPathComponent(".claude"),
+            ]
+        }
+        let roots = Set(configuredRoots.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
+            .sorted()
+            .joined(separator: "\n")
+        return "home=\(home)\nroots=\(roots)"
     }
 
     // MARK: - Root and file discovery
@@ -159,9 +228,7 @@ actor ClaudeLogUsageScanner {
         for line in data.split(separator: UInt8(ascii: "\n")) {
             guard line.range(of: marker) != nil else { continue }
             if hasUnsupportedNullField(line) { continue }
-            if let entry = parseLine(Data(line)) {
-                entries.append(entry)
-            }
+            entries.append(contentsOf: parseEntries(Data(line)))
         }
         return entries
     }
@@ -170,12 +237,64 @@ actor ClaudeLogUsageScanner {
     /// with numeric `input_tokens`/`output_tokens` is required, everything else optional, and a
     /// malformed or invalid line is skipped rather than failing the file.
     static func parseLine(_ data: Data) -> Entry? {
+        parseEntries(data).first
+    }
+
+    /// A Claude log line can carry nested advisor work in `usage.iterations`. The top-level usage
+    /// remains the main-model entry; only advisor-message iterations become additional entries,
+    /// matching ccusage without recounting the ordinary message iterations that feed that total.
+    private static func parseEntries(_ data: Data) -> [Entry] {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let timestampRaw = object["timestamp"] as? String,
               let timestamp = OpenUsageISO8601.date(from: timestampRaw),
               let message = object["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any],
-              let input = usage["input_tokens"] as? NSNumber,
+              let parsedUsage = tokenBreakdown(from: usage),
+              isValidEntry(object, message: message)
+        else { return [] }
+
+        let model = (message["model"] as? String).flatMap { $0 == "<synthetic>" ? nil : $0 }
+        let parent = Entry(
+            timestamp: timestamp,
+            tokens: parsedUsage.tokens,
+            messageID: message["id"] as? String,
+            requestID: object["requestId"] as? String,
+            isSidechain: object["isSidechain"] as? Bool ?? false,
+            hasSpeed: parsedUsage.hasSpeed,
+            costUSD: (object["costUSD"] as? NSNumber)?.doubleValue,
+            model: model
+        )
+
+        guard let iterations = usage["iterations"] as? [[String: Any]] else { return [parent] }
+
+        var entries = [parent]
+        var advisorIndex = 0
+        for iteration in iterations {
+            guard iteration["type"] as? String == "advisor_message",
+                  let advisorModel = iteration["model"] as? String,
+                  !advisorModel.isEmpty,
+                  let advisorUsage = tokenBreakdown(from: iteration)
+            else { continue }
+
+            entries.append(Entry(
+                timestamp: parent.timestamp,
+                tokens: advisorUsage.tokens,
+                messageID: parent.messageID.map { "\($0):advisor:\(advisorIndex)" },
+                requestID: parent.requestID,
+                isSidechain: parent.isSidechain,
+                hasSpeed: advisorUsage.hasSpeed,
+                costUSD: nil,
+                model: advisorModel
+            ))
+            advisorIndex += 1
+        }
+        return entries
+    }
+
+    private static func tokenBreakdown(
+        from usage: [String: Any]
+    ) -> (tokens: TokenBreakdown, hasSpeed: Bool)? {
+        guard let input = usage["input_tokens"] as? NSNumber,
               let output = usage["output_tokens"] as? NSNumber
         else { return nil }
 
@@ -183,8 +302,6 @@ actor ClaudeLogUsageScanner {
         // shape we don't understand, so the line is skipped (ccusage's enum parse does the same).
         let speed = usage["speed"] as? String
         if let speed, speed != "fast", speed != "standard" { return nil }
-
-        guard isValidEntry(object, message: message) else { return nil }
 
         // Cache writes: the 5m/1h split when present (1h bills at 2x input), else the legacy
         // aggregate `cache_creation_input_tokens` treated as all-5m.
@@ -197,26 +314,14 @@ actor ClaudeLogUsageScanner {
             cacheWrite5m = (usage["cache_creation_input_tokens"] as? NSNumber)?.intValue ?? 0
         }
 
-        let tokens = TokenBreakdown(
+        return (TokenBreakdown(
             input: input.intValue,
             cacheWrite5m: cacheWrite5m,
             cacheWrite1h: cacheWrite1h,
             cacheRead: (usage["cache_read_input_tokens"] as? NSNumber)?.intValue ?? 0,
             output: output.intValue,
             isFast: speed == "fast"
-        )
-
-        let model = (message["model"] as? String).flatMap { $0 == "<synthetic>" ? nil : $0 }
-        return Entry(
-            timestamp: timestamp,
-            tokens: tokens,
-            messageID: message["id"] as? String,
-            requestID: object["requestId"] as? String,
-            isSidechain: object["isSidechain"] as? Bool ?? false,
-            hasSpeed: speed != nil,
-            costUSD: (object["costUSD"] as? NSNumber)?.doubleValue,
-            model: model
-        )
+        ), speed != nil)
     }
 
     /// ccusage's validity rules: a `version` that isn't semver-ish marks a foreign log format, and

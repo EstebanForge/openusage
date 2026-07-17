@@ -29,9 +29,27 @@ your macOS account (owner read and write only). Antigravity's short-lived refres
 to the current Keychain login using a one-way fingerprint; the refresh credential itself is not copied.
 The cache is never used after logout, an account change, or while Keychain access is unavailable.
 
+Claude Desktop access is strictly read-only. OpenUsage may ask macOS for permission to use the
+`Claude Safe Storage` Keychain item so it can decrypt Desktop's current access token. It never uses
+Desktop's rotating refresh token and never modifies Desktop's config, cookies, or Keychain data.
+
 ## Other network requests
 
 Besides the provider API calls the vendor's own tools would make, OpenUsage fetches public [model price lists](pricing.md) about once an hour (from `raw.githubusercontent.com`, `models.dev`, and this project's GitHub Pages). These are plain downloads of public data — they carry no usage, log, or account information, and they run regardless of the Share Anonymous Usage setting. The spend tiles are computed from local CLI logs entirely on your Mac; no log data ever leaves it.
+
+To avoid re-reading unchanged Claude, Codex, and pi logs after every relaunch, OpenUsage keeps their
+parsed usage events in `~/Library/Application Support/OpenUsage/log-scan-cache/`. These records contain
+the usage metadata needed for local totals, including any per-event cost already recorded by a provider,
+but not raw JSONL lines or conversation text. They are private to your macOS account and are never sent
+to PostHog, a provider, or iCloud. Old source-file records are dropped as the scan window advances, and
+identity caches that have not been used for 35 days are removed. OpenUsage's pricing engine runs after
+the cache is read, so its computed aggregates and totals are not persisted in this cache.
+
+If you explicitly turn on [iCloud Sync](icloud-sync.md), OpenUsage writes normalized daily tokens,
+spend, and model totals to its private iCloud container so your own Macs can show one combined summary.
+Credentials, account limits, provider responses, and raw logs are never written there. This is separate
+from anonymous usage sharing: iCloud Sync defaults off and uses your iCloud account, while the analytics
+toggle controls PostHog events.
 
 ## How it works
 

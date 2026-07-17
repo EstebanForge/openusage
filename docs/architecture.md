@@ -5,8 +5,9 @@ A high-level map of how OpenUsage is put together, for people working on the cod
 
 ## The shape of the app
 
-OpenUsage is a single SwiftPM executable — there is no Xcode project. It's a menu-bar app: a SwiftUI
-interface hosted inside an AppKit status item and panel. The code is grouped by role:
+OpenUsage is a SwiftPM package with a shared module and two thin executables — there is no Xcode project.
+The main executable is a menu-bar app: a SwiftUI interface hosted inside an AppKit status item and panel.
+The code is grouped by role:
 
 - `App/` — startup and the AppKit bridge (status item, panel, the app entry point).
 - `Models/` — the small value types the rest of the app speaks in (`MetricLine`, `WidgetData`, descriptors).
@@ -23,6 +24,12 @@ providers, turns it into a `WidgetRegistry`, creates the stores, starts the peri
 starts the local HTTP API. Everything else receives what it needs from here rather than reaching for
 globals, which keeps the pieces testable in isolation.
 
+The `openusage` executable imports the same module. A normal invocation reads `ProviderSnapshotCache`
+and exits; `--force` constructs the canonical `ProviderCatalog` and calls `WidgetDataStore`'s forced
+refresh path before reading. Providers annotate the scalar resources they export through the stable
+limits contract; the CLI and `/v1/limits` share one serializer over those same normalized snapshots.
+It never launches the GUI or duplicates provider, auth, pricing, or mapping logic.
+
 ## The provider pipeline
 
 Each provider is a small module that conforms to `ProviderRuntime`. A refresh flows through three parts:
@@ -38,18 +45,32 @@ Because every provider produces the same normalized `MetricLine` shapes, the UI 
 way and doesn't need to know provider-specific details. To add one, see
 [Adding a provider](adding-a-provider.md).
 
+Claude, Codex, and pi share `IncrementalJSONLScanner` for local JSONL history. Its per-file parsed events
+are cached by path, size, and modification time in a versioned Application Support store, partitioned by
+provider/home identity. Provider instances reading the same home share one scanner actor, which avoids
+duplicate parsing across cards; the disk store provides the reuse across process launches. Scans drop
+source-file records as their modification dates leave the requested history window, while aggregation and
+pricing still run on every refresh from the cached events.
+
 ## Stores
 
 The UI reads from a few observable stores:
 
-- `WidgetDataStore` — the latest snapshot per provider, plus refresh and caching. This is what the
-  dashboard rows and menu-bar strip read.
+- `WidgetDataStore` — the latest snapshot per provider, plus refresh and caching. It keeps machine-local
+  cached snapshots separate from rendered snapshots so peer history can never be written back out and
+  counted again.
 - `LayoutStore` — which metrics are shown, the provider/metric order, and which metrics are starred for the
   menu bar.
 - `ProviderEnablementStore` — which providers the user has turned on or off.
+- `ICloudUsageSyncStore` — one coordinated, atomic history file per Mac, iCloud metadata notifications,
+  and the visible device/error state. File access is injected for lifecycle and failure tests.
 
 Refresh runs on a timer in `AppContainer`; each pass respects the cache, so the network is only hit once a
 snapshot has actually expired.
+
+Providers with spend tiles carry an explicit history scope beside their export descriptors. Machine-local
+sources can be summed across device files; account-wide sources such as Cursor cannot. `WidgetDataStore`
+re-renders only the spend rows from the union, leaving quota and error state local.
 
 ## The AppKit bridge
 

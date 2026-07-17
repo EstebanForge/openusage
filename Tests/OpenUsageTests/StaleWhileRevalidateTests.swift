@@ -90,6 +90,86 @@ final class StaleWhileRevalidateTests: XCTestCase {
         XCTAssertEqual(store.data(for: descriptor).used, 60)
     }
 
+    func testSuccessfulRefreshWithoutHistoryPreservesOnlyLastGoodHistory() async throws {
+        let provider = Self.testProvider
+        let quota = Self.descriptor(provider, id: "test.alpha", metric: "Alpha")
+        let historyDescriptor = UsageHistoryDescriptor(
+            scope: .machineLocal,
+            estimatedCost: true,
+            sourceNote: "From test logs"
+        )
+        let trend = WidgetDescriptor.usageTrend(provider: provider).exportingHistory(
+            scope: historyDescriptor.scope,
+            estimatedCost: historyDescriptor.estimatedCost,
+            sourceNote: historyDescriptor.sourceNote
+        )
+        let spend = WidgetDescriptor.spendTiles(provider: provider)
+        let descriptors = [quota, trend] + spend
+        let defaults = makeUserDefaults("history-scan-miss")
+        let fixedNow = Date(timeIntervalSince1970: 1_752_364_800)
+        let history = ProviderUsageHistory(
+            series: DailyUsageSeries(daily: [
+                DailyUsageEntry(
+                    date: DailyUsageAccumulator.dayKey(from: fixedNow),
+                    totalTokens: 400,
+                    costUSD: 4
+                )
+            ]),
+            modelUsage: ModelUsageSeries(daily: [
+                DailyModelUsageEntry(
+                    date: DailyUsageAccumulator.dayKey(from: fixedNow),
+                    models: [ModelUsageEntry(model: "Test Model", totalTokens: 400, costUSD: 4)]
+                )
+            ])
+        )
+        var firstSnapshot = ProviderSnapshot(
+            providerID: provider.id,
+            displayName: provider.displayName,
+            plan: "Original",
+            lines: [.progress(label: "Alpha", used: 40, limit: 100, format: .percent)],
+            refreshedAt: fixedNow,
+            usageHistory: history
+        )
+        firstSnapshot = UsageHistorySnapshotRenderer.render(
+            local: firstSnapshot,
+            history: history,
+            descriptor: historyDescriptor,
+            now: fixedNow,
+            combined: false
+        )
+        let runtime = MutableProviderRuntime(
+            provider: provider,
+            descriptors: descriptors,
+            snapshot: firstSnapshot
+        )
+        let store = WidgetDataStore(
+            registry: WidgetRegistry(providers: [provider], descriptors: descriptors),
+            providers: [runtime],
+            cache: ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots"),
+            defaults: defaults,
+            now: { fixedNow }
+        )
+
+        await store.refreshAll(force: true)
+        runtime.snapshot = ProviderSnapshot(
+            providerID: provider.id,
+            displayName: provider.displayName,
+            plan: "Current",
+            lines: [.progress(label: "Alpha", used: 60, limit: 100, format: .percent)],
+            refreshedAt: fixedNow.addingTimeInterval(300)
+        )
+        await store.refreshAll(force: true)
+
+        let refreshed = try XCTUnwrap(store.localSnapshots[provider.id])
+        XCTAssertEqual(refreshed.plan, "Current")
+        XCTAssertEqual(store.data(for: quota).used, 60)
+        XCTAssertEqual(refreshed.usageHistory, history)
+        guard case .values(_, _, _, _, _, let breakdown) = refreshed.line(label: "Today") else {
+            return XCTFail("The retained history should rebuild the spend rows")
+        }
+        XCTAssertEqual(breakdown?.sourceNote, historyDescriptor.sourceNote)
+    }
+
     func testCacheHitRefreshDoesNotInvalidateSnapshotObservers() async {
         // Regression for #18: a cache-hit pass must not re-assign an unchanged snapshot.
         // `@Observable` doesn't compare values, so a no-op write would still re-render the
@@ -161,6 +241,114 @@ final class StaleWhileRevalidateTests: XCTestCase {
         XCTAssertEqual(store.errorMessage(for: provider.id), "Not signed in")
     }
 
+    func testCancelledRefreshKeepsLastGoodHistoryAndSkipsPublication() async throws {
+        let provider = Self.testProvider
+        let descriptor = Self.descriptor(provider, id: "test.alpha", metric: "Alpha")
+        let defaults = makeUserDefaults("cancelled-history")
+        let history = ProviderUsageHistory(
+            series: DailyUsageSeries(daily: [
+                DailyUsageEntry(date: "2026-07-17", totalTokens: 400, costUSD: 4)
+            ])
+        )
+        let runtime = BlockingProviderRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                plan: "Last good",
+                lines: [.progress(label: "Alpha", used: 40, limit: 100, format: .percent)],
+                usageHistory: history
+            )
+        )
+        let cache = ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots")
+        let store = WidgetDataStore(
+            registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
+            providers: [runtime],
+            cache: cache,
+            defaults: defaults
+        )
+        _ = await store.refresh(providerID: provider.id, force: true)
+        var historyChangeCount = 0
+        store.onLocalHistoryChanged = { historyChangeCount += 1 }
+
+        runtime.snapshot = ProviderSnapshot(
+            providerID: provider.id,
+            displayName: provider.displayName,
+            plan: "Partial cancelled result",
+            lines: [.progress(label: "Alpha", used: 0, limit: 100, format: .percent)],
+            usageHistory: ProviderUsageHistory(series: DailyUsageSeries(daily: []))
+        )
+        runtime.blockNextRefresh = true
+        let task = Task {
+            await store.refresh(providerID: provider.id, force: true)
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !runtime.isWaiting, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        guard runtime.isWaiting else {
+            runtime.resume()
+            task.cancel()
+            _ = await task.value
+            return XCTFail("the provider refresh did not suspend before the timeout")
+        }
+        task.cancel()
+        runtime.resume()
+
+        let outcome = await task.value
+        guard case .skipped = outcome else {
+            return XCTFail("a canceled provider refresh must be skipped")
+        }
+        let retained = try XCTUnwrap(store.localSnapshots[provider.id])
+        XCTAssertEqual(retained.plan, "Last good")
+        XCTAssertEqual(retained.usageHistory, history)
+        XCTAssertEqual(historyChangeCount, 0)
+        XCTAssertFalse(store.refreshingProviderIDs.contains(provider.id))
+        XCTAssertEqual(cache.loadSnapshots(providerIDs: [provider.id])[provider.id]?.plan, "Last good")
+    }
+
+    func testCompletedEmptyHistoryStillClearsLastGoodHistory() async throws {
+        let provider = Self.testProvider
+        let descriptor = Self.descriptor(provider, id: "test.alpha", metric: "Alpha")
+        let defaults = makeUserDefaults("completed-empty-history")
+        let runtime = MutableProviderRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                plan: "With history",
+                lines: [.progress(label: "Alpha", used: 40, limit: 100, format: .percent)],
+                usageHistory: ProviderUsageHistory(
+                    series: DailyUsageSeries(daily: [
+                        DailyUsageEntry(date: "2026-07-17", totalTokens: 400, costUSD: 4)
+                    ])
+                )
+            )
+        )
+        let store = WidgetDataStore(
+            registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
+            providers: [runtime],
+            cache: ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots"),
+            defaults: defaults
+        )
+        _ = await store.refresh(providerID: provider.id, force: true)
+
+        runtime.snapshot = ProviderSnapshot(
+            providerID: provider.id,
+            displayName: provider.displayName,
+            plan: "Completed empty scan",
+            lines: [.progress(label: "Alpha", used: 50, limit: 100, format: .percent)],
+            usageHistory: ProviderUsageHistory(series: DailyUsageSeries(daily: []))
+        )
+        _ = await store.refresh(providerID: provider.id, force: true)
+
+        let refreshed = try XCTUnwrap(store.localSnapshots[provider.id])
+        XCTAssertEqual(refreshed.plan, "Completed empty scan")
+        XCTAssertEqual(refreshed.usageHistory?.series.daily, [])
+    }
+
     // MARK: - Fixtures
 
     private static let testProvider = Provider(
@@ -221,5 +409,36 @@ private final class MutableProviderRuntime: ProviderRuntime {
 
     func refresh() async -> ProviderSnapshot {
         snapshot
+    }
+}
+
+@MainActor
+private final class BlockingProviderRuntime: ProviderRuntime {
+    let provider: Provider
+    let widgetDescriptors: [WidgetDescriptor]
+    var snapshot: ProviderSnapshot
+    var blockNextRefresh = false
+    private(set) var isWaiting = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(provider: Provider, descriptors: [WidgetDescriptor], snapshot: ProviderSnapshot) {
+        self.provider = provider
+        self.widgetDescriptors = descriptors
+        self.snapshot = snapshot
+    }
+
+    func refresh() async -> ProviderSnapshot {
+        if blockNextRefresh {
+            blockNextRefresh = false
+            isWaiting = true
+            await withCheckedContinuation { continuation = $0 }
+            isWaiting = false
+        }
+        return snapshot
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
     }
 }
